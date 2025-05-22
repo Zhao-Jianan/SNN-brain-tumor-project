@@ -97,31 +97,49 @@ class SpikingSwinTransformerBlock3D(nn.Module):
 class SpikingSwinTransformer3D(nn.Module):
     def __init__(self, in_channels=4, embed_dim=64, num_heads=4, T=2, window_size=(4, 4, 4), dropout=0.1):
         super().__init__()
-        # Patch embedding模块
+        # Patch embedding模块：下采样至原始的1/4 (即128→32)
         self.patch_embed = SpikingPatchEmbed3D(in_channels, embed_dim, patch_size=window_size)
 
         # 两个编码块交替使用滑动窗口机制，增强局部和全局感受野
         self.encoder_block1 = SpikingSwinTransformerBlock3D(embed_dim, num_heads, window_size, shift=False, dropout=dropout)
         self.encoder_block2 = SpikingSwinTransformerBlock3D(embed_dim, num_heads, window_size, shift=True, dropout=dropout)
 
-        # 解码器，利用转置卷积上采样恢复空间尺寸，并用LIF激活与dropout增强泛化
-        self.decoder = nn.Sequential(
+        # 解码器第一层上采样，利用转置卷积上采样恢复空间尺寸，上采样回到64×64×64, 并用LIF激活与dropout增强泛化
+        self.decoder_block1 = nn.Sequential(
             nn.ConvTranspose3d(embed_dim * 2, 32, kernel_size=2, stride=2),
             nn.BatchNorm3d(32),
             neuron.LIFNode(surrogate_function=surrogate.Sigmoid()),
             nn.Dropout(dropout),
         )
-        self.readout = nn.Conv3d(32, 4, kernel_size=1)  # 输出4个类别通道
+
+        # 解码器第二层上采样，从64×64×64到128×128×128
+        self.decoder_block2 = nn.Sequential(
+            nn.ConvTranspose3d(32, 16, kernel_size=2, stride=2),  # 64 → 128
+            nn.BatchNorm3d(16),
+            neuron.LIFNode(surrogate_function=surrogate.Sigmoid()),
+            nn.Dropout(dropout),
+        )
+
+        self.readout = nn.Conv3d(16, 4, kernel_size=1)  # 输出4个类别通道
         self.T = T  # 脉冲时间步数
 
     def forward(self, x_seq):
         functional.reset_net(self)  # 重置LIF神经元状态，防止跨时间步干扰
         spike_sum = 0
         for t in range(self.T):
-            x = self.patch_embed(x_seq[t])  # patch embedding
-            x1 = self.encoder_block1(x)     # 编码块1（无滑动）
-            x2 = self.encoder_block2(x1)    # 编码块2（滑动窗口）
-            x_skip = torch.cat([x2, x1], dim=1)  # 跳跃连接融合特征
-            x = self.decoder(x_skip)        # 解码器上采样
-            spike_sum += self.readout(x)    # 读出层累积脉冲响应
+            x = x_seq[t]
+            # 如果缺少 batch 维度，则补一个维度，变成 batch=1
+            if x.dim() == 4:  # 形状是 [C, D, H, W]
+                x = x.unsqueeze(0)  # 变成 [1, C, D, H, W]
+            elif x.dim() != 5:
+                raise ValueError(f"输入维度异常，期望4维或5维张量，但得到{x.dim()}维")
+
+            x = self.patch_embed(x)  # patch embedding
+            x1 = self.encoder_block1(x)     # 编码器块1（无滑动）
+            x2 = self.encoder_block2(x1)    # 编码器块2（滑动窗口）
+            x_skip = torch.cat([x2, x1], dim=1)  # 跳跃连接融合特征 shape: [B, 128, 32, 32, 32]
+            x = self.decoder_block1(x_skip)      # 解码器块1上采样 64x64x64 shape: [B, 32, 64, 64, 64]
+            x = self.decoder_block2(x)           # 解码器块2上采样 128x128x128 shape: [B, 16, 128, 128, 128]
+            out = self.readout(x)                # 输出层 shape: [B, 4, 128, 128, 128]
+            spike_sum += out                     # 读出层累积脉冲响应
         return spike_sum / self.T  # 脉冲平均输出，提高稳定性

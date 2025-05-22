@@ -64,13 +64,13 @@ def plot_metrics(train_losses, val_losses, val_dices, val_hd95s, fold_number):
     plt.close()
 
 
-file_name = 'train_info2.txt'
+file_name = 'train_info3.txt'
 val_hd95s = []
 fold_number = 1
 train_losses, val_losses, val_dices = read_info(file_name)
-# plot_metrics(train_losses, val_losses, val_dices, val_hd95s, fold_number)
+plot_metrics(train_losses, val_losses, val_dices, val_hd95s, fold_number)
 
 
-print("train_losses:", train_losses)
-print("val_losses:", val_losses)
-print("val_dices:", val_dices)
+# print("train_losses:", train_losses)
+# print("val_losses:", val_losses)
+# print("val_dices:", val_dices)

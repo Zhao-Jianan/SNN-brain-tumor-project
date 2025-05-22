@@ -5,7 +5,7 @@ device = torch.device(gpu_name if torch.cuda.is_available() else "cpu")
 root_dir = './data/HGG'
 
 T = 4
-num_epochs = 120
+num_epochs = 150
 batch_size = 2
 k_folds = 2
 class_weights = torch.tensor([0.05, 0.3, 0.3, 0.35], dtype=torch.float32).to(device)

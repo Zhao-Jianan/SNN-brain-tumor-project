@@ -8,7 +8,7 @@ from spikingjelly.activation_based.encoding import PoissonEncoder
 
 
 class BraTSDataset(Dataset):
-    def __init__(self, case_dirs, T=8, transform=None, patch_size=(128, 128, 64), num_classes=4, debug=False):
+    def __init__(self, case_dirs, T=8, transform=None, patch_size=(128, 128, 128), num_classes=4, debug=False):
         self.case_dirs = case_dirs
         self.T = T
         self.transform = transform
@@ -20,60 +20,77 @@ class BraTSDataset(Dataset):
     def __len__(self):
         return len(self.case_dirs)
 
+
     def __getitem__(self, idx):
+        """
+        根据索引获取病例数据，包含图像读取、处理和编码
+        """
         case_dir = self.case_dirs[idx]
         case_name = os.path.basename(case_dir)
 
-        # 4个模态路径
-        modalities = ['t1', 't1ce', 't2', 'flair']
-        imgs = []
-        for mod in modalities:
-            path = os.path.join(case_dir, f'{case_name}_{mod}.nii')
-            img = nib.load(path).get_fdata()
-            
-            # BraTS per-image Z-score normalization on non-zero voxels only
-            nonzero = img > 0
-            if np.any(nonzero):
-                mean = img[nonzero].mean()
-                std = img[nonzero].std()
-                img[nonzero] = (img[nonzero] - mean) / (std + 1e-8)
-            else:
-                img[:] = 0  # Handle rare all-zero image case
-
-
-            img = np.transpose(img, (2, 0, 1))
-            imgs.append(img)
-
-        # 拼接4个模态，形状变为 (4, D, H, W)
-        img = np.stack(imgs, axis=0)
-        img = torch.tensor(img).float()
-
-        # 加载标签
-        label_path = os.path.join(case_dir, f'{case_name}_seg.nii')
-        label = nib.load(label_path).get_fdata()
-        label = np.transpose(label, (2, 0, 1))  # (D, H, W)
-        label = torch.tensor(label).long()
-
-        label[label == 4] = 3
+        img = self.load_modalities(case_dir, case_name)   # 加载图像
+        label = self.load_label(case_dir, case_name)      # 加载标签
 
         if self.transform:
-            img = self.transform(img)
-            label = self.transform(label)
+            img = self.transform(img)                      # 图像变换
+            label = self.transform(label)                  # 标签变换
 
-        # 裁剪patch
-        img, label = self.patch_crop(img, label)
+        img, label = self.patch_crop(img, label)          # 随机裁剪patch
 
         if self.debug:
             unique_vals = torch.unique(label)
+            # 检查标签值是否合法
             if label.min() < 0 or label.max() >= self.num_classes:
                 print(f"[ERROR] Label out of range in sample {case_name}")
                 print(f"Label unique values: {unique_vals}")
                 raise ValueError(f"Label contains invalid class ID(s): {unique_vals.tolist()}")
 
-        # Poisson编码，x_seq形状 [T, 4, D, H, W]
+        # Poisson编码生成T个时间步的输入序列
         x_seq = torch.stack([self.encoder(img) for _ in range(self.T)], dim=0)
 
         return x_seq, label
+
+
+    def normalize_nonzero(self, img):
+        """对非零体素进行Z-score标准化"""
+        nonzero = img > 0
+        if np.any(nonzero):
+            mean = img[nonzero].mean()  # 计算非零像素均值
+            std = img[nonzero].std()  # 计算非零像素标准差
+            img[nonzero] = (img[nonzero] - mean) / (std + 1e-8)  # 标准化
+        else:
+            img[:] = 0  # 若全零则置零处理
+        return img
+
+
+    def load_modalities(self, case_dir, case_name):
+        """
+        读取并标准化4个模态图像，返回Tensor格式数据
+        """
+        modalities = ['t1', 't1ce', 't2', 'flair']
+        imgs = []
+        for mod in modalities:
+            path = os.path.join(case_dir, f'{case_name}_{mod}.nii')
+            img = nib.load(path).get_fdata()    # 读取nii数据
+            img = np.transpose(img, (2, 0, 1))   # 转换维度到(D, H, W)
+            img = self.normalize_nonzero(img)   # 标准化非零区域
+            imgs.append(img)
+        imgs = np.stack(imgs, axis=0)       # 合并为(4, D, H, W)
+        imgs = torch.tensor(imgs).float()  # 转换为Tensor
+        return imgs
+
+
+    def load_label(self, case_dir, case_name):
+        """
+        读取标签数据并进行处理，返回LongTensor格式
+        """
+        label_path = os.path.join(case_dir, f'{case_name}_seg.nii')
+        label = nib.load(label_path).get_fdata()   # 读取标签
+        label = np.transpose(label, (2, 0, 1))    # 转换维度(D, H, W)
+        label = torch.tensor(label).long()     # 转为LongTensor
+        label[label == 4] = 3                  # 标签4映射到3
+        return label
+    
 
     def patch_crop(self, img, label):
         _, D, H, W = img.shape

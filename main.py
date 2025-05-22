@@ -20,14 +20,15 @@ def main():
 
     # 设置损失函数和优化器
     criterion = DiceCrossEntropyLoss(weight=class_weights, dice_weight=2.0)
-    model = SpikingSwinTransformer3D(T=T).to(device)  # 模型
-    model.apply(init_weights)
-    optimizer = optim.Adam(model.parameters(), lr=base_lr)
     kf = KFold(n_splits=k_folds, shuffle=True)
-    scheduler = get_scheduler_with_warmup(optimizer, num_warmup_epochs, num_epochs, base_lr, min_lr)
 
     # 开始交叉验证
     for fold, (train_idx, val_idx) in enumerate(kf.split(case_dirs)):
+        model = SpikingSwinTransformer3D(T=T).to(device)  # 模型
+        model.apply(init_weights)
+        optimizer = optim.Adam(model.parameters(), lr=base_lr)
+        scheduler = get_scheduler_with_warmup(optimizer, num_warmup_epochs, num_epochs, base_lr, min_lr)
+
         # 根据交叉验证划分数据集
         train_case_dirs = [case_dirs[i] for i in train_idx]
         val_case_dirs = [case_dirs[i] for i in val_idx]

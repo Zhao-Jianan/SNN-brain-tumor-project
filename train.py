@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-from utils import downsample_label
 from metrics import dice_score, compute_hd95
 
 
@@ -45,8 +44,7 @@ def train(train_loader, model, optimizer, criterion, device):
             print(f"Output: {output}")  # 输出模型输出，检查其值
             break
         
-        target_down = downsample_label(y, output.shape[2:])
-        loss = criterion(output, target_down)
+        loss = criterion(output, y)
 
         # 检查 loss 是否为 NaN
         if torch.isnan(loss):
@@ -83,8 +81,7 @@ def validate(val_loader, model, criterion, device, compute_hd):
 
             output = model(x_seq)  # [B, 4, D, H, W]，未过 softmax
 
-            target_down = downsample_label(y, output.shape[2:])
-            loss = criterion(output, target_down)
+            loss = criterion(output, y)
 
             # 检查 output 是否为 NaN 或 Inf
             if torch.isnan(output).any() or torch.isinf(output).any():
@@ -96,10 +93,10 @@ def validate(val_loader, model, criterion, device, compute_hd):
 
             pred = torch.argmax(output, dim=1)  # [B, D, H, W]
 
-            dice = dice_score(pred, target_down)
+            dice = dice_score(pred, y)
 
             if compute_hd:
-                hd95 = compute_hd95(pred, target_down)
+                hd95 = compute_hd95(pred, y)
                 # if np.isnan(hd95):
                 #     print(f"[Warning] NaN in HD95")
                 hd95s.append(hd95)
