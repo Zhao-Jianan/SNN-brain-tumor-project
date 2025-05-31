@@ -2,17 +2,19 @@ import torch
 import nibabel as nib
 import numpy as np
 import os
-from spiking_swin_model import SpikingSwinTransformer3D
+from spiking_window_swin_layer_model import SpikingSwinTransformer3D
 import torch.nn.functional as F
-from config import T, device
+from config import config as cfg
 from spikingjelly.activation_based.encoding import PoissonEncoder
-from config import device
+from monai.transforms import (
+    Compose, LoadImaged, EnsureChannelFirstd, NormalizeIntensityd
+    )
+from monai.data import MetaTensor
+from typing import List
+from copy import deepcopy
 
 
-window_size = (128, 128, 128)
-stride = (64, 64, 64)
 
-modalities = ['t1', 't1ce', 't2', 'flair']
 
 class PoissonEncoderWrapper:
     def __init__(self, T):
@@ -22,29 +24,56 @@ class PoissonEncoderWrapper:
     def __call__(self, img):
         # img: Tensor [C, D, H, W]
         # 返回Tensor [T, C, D, H, W]
-        return torch.stack([self.encoder(img) for _ in range(self.T)], dim=0)  # 一次性生成 [T, C, D, H, W]
+        return torch.stack([self.encoder(img) for _ in range(self.T)], dim=0)
 
-def zscore_normalize(img):
-    nonzero = img > 0
-    if np.any(nonzero):
-        mean = img[nonzero].mean()
-        std = img[nonzero].std()
-        img[nonzero] = (img[nonzero] - mean) / (std + 1e-8)
-    else:
-        img[:] = 0
-    return img
 
-def load_modalities(case_dir, case_name):
-    imgs = []
-    for mod in modalities:
-        path = os.path.join(case_dir, f'{case_name}_{mod}.nii')
-        img = nib.load(path).get_fdata()
-        img = zscore_normalize(img)
-        img = np.transpose(img, (2,0,1))  # 转成 D,H,W顺序
-        imgs.append(img)
-    imgs = np.stack(imgs, axis=0)  # (4, D, H, W)
-    imgs = torch.tensor(imgs).float()
-    return imgs
+
+class InferencePreprocessor:
+    def __init__(self, modalities: List[str], T: int):
+        """
+        :param modalities: 模态名称列表，如 ['t1', 't1ce', 't2', 'flair']
+        :param T: 时间步数，用于泊松编码
+        """
+        self.modalities = modalities
+        self.T = T
+        self.encoder = PoissonEncoder()
+
+        # 定义 MONAI 的预处理 transform（用于每个 modality）
+        self.transform = Compose([
+            LoadImaged(keys=["img"], image_only=True),
+            EnsureChannelFirstd(keys=["img"]),
+            NormalizeIntensityd(keys=["img"], nonzero=True, channel_wise=True)
+        ])
+
+    def load_case(self, case_dir: str, case_name: str) -> torch.Tensor:
+        """
+        加载并归一化多模态 MRI 图像，返回 tensor (C, D, H, W)，并保留 affine
+        """
+        imgs = []
+        for mod in self.modalities:
+            path = os.path.join(case_dir, f'{case_name}_{mod}.nii')
+            data_dict = {"img": path}
+            normalized = self.transform(deepcopy(data_dict))["img"]  # (1, D, H, W)
+            img = normalized.squeeze(0).numpy()  # 去掉 channel 维度 (D, H, W)
+            img = np.transpose(img, (0, 1, 2))  # 保持 D, H, W
+            imgs.append(img)
+        
+        imgs = np.stack(imgs, axis=0)  # (4, D, H, W)
+        return torch.tensor(imgs).float()
+
+    def rescale_to_unit_range(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        将每个样本缩放到 0–1，按通道分别处理。用于编码器输入。
+        输入 x: Tensor [C, D, H, W]
+        """
+        x_min = x.amin(dim=[1, 2, 3], keepdim=True)
+        x_max = x.amax(dim=[1, 2, 3], keepdim=True)
+        x_rescaled = (x - x_min) / (x_max - x_min + 1e-8)
+        return x_rescaled.clamp(0., 1.)
+    
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.rescale_to_unit_range(x)
+        return self.encoder(x)
 
 
 
@@ -77,31 +106,52 @@ def sliding_window_inference(image, model, encoder, window_size=(128, 128, 128),
 
     count_map[count_map == 0] = 1
     output_probs /= count_map
-    return torch.argmax(output_probs, dim=0).cpu()
+    # 二值化每个通道
+    binary_pred = (output_probs > 0.5).int().cpu()  # [3, D, H, W]
 
+    # 转换为单通道 BraTS 标签格式
+    pred = convert_prediction_to_label(binary_pred)  # [D, H, W]
+
+    return pred
+
+
+def convert_prediction_to_label(pred: torch.Tensor) -> torch.Tensor:
+    """
+    将模型输出的 TC/WT/ET 三通道 mask 转为单通道 Brats 原始标签：
+    1 = ED, 2 = NET, 4 = ET
+    """
+    # pred: [3, D, H, W] → TC, WT, ET
+    tc, wt, et = pred[0], pred[1], pred[2]  # 分别为 binary mask
+    result = torch.zeros_like(tc).int()
+    result[wt == 1] = 1       # Whole tumor (ED)
+    result[tc == 1] = 2       # Tumor core (NET)
+    result[et == 1] = 4       # Enhancing tumor (ET)
+    return result
 
 def main():
     # 路径配置
-    case_dir = "./data/HGG/Brats18_2013_2_1"  # 修改为你的case文件夹
+    case_dir = "./data/HGG/Brats18_2013_2_1"  # case文件夹
     case_name = os.path.basename(case_dir)
 
     # 模型加载
-    model_ckpt = "./checkpoint/best_model_fold1.pth"  # 修改为你的权重路径
-    model = SpikingSwinTransformer3D(T=T).to(device)
-    model.load_state_dict(torch.load(model_ckpt, map_location=device))
+    model_ckpt = "./checkpoint/best_model_fold1.pth"  # 权重路径
+    model = SpikingSwinTransformer3D(T=cfg.T).to(cfg.device)
+    model.load_state_dict(torch.load(model_ckpt, map_location=cfg.device))
     model.eval()
-    model.num_classes = 4  # 根据你训练类别修改
+    model.num_classes = 3 
 
-    # 编码器
-    encoder = PoissonEncoderWrapper(T=T)
+    # 推理处理器
+    preprocessor = InferencePreprocessor(modalities=cfg.modalities, T=cfg.T)
 
-    # 加载图像数据
-    img = load_modalities(case_dir, case_name)  # (4, D, H, W)
+    # 图像加载与预处理
+    img_tensor = preprocessor.load_case(case_dir, case_name)  # (4, D, H, W)
 
-    # 滑窗推理
-    pred_mask = sliding_window_inference(img, model, encoder, window_size, stride)  # (D,H,W)
+    # 推理
+    pred_mask = sliding_window_inference(
+        img_tensor, model, preprocessor.encode, window_size=cfg.patch_size, stride = (64, 64, 64)
+        )
 
-    # 转回原始形状（如果pad了，裁剪回去）
+    # 恢复原始空间形状（如果pad了，裁剪回去）
     original_img_path = os.path.join(case_dir, f'{case_name}_t1.nii')
     original_img = nib.load(original_img_path)
     orig_shape = original_img.shape
@@ -117,8 +167,9 @@ def main():
 
     # 保存预测结果
     pred_nii = nib.Nifti1Image(pred_mask.astype(np.uint8), original_img.affine, original_img.header)
-    nib.save(pred_nii, os.path.join(case_dir, f'{case_name}_pred_mask.nii.gz'))
-    print(f"预测mask保存至: {os.path.join(case_dir, f'{case_name}_pred_mask.nii.gz')}")
+    save_path = os.path.join(case_dir, f"{case_name}_pred_mask.nii.gz")
+    nib.save(pred_nii, save_path)
+    print(f"预测mask保存至: {save_path}")
 
 if __name__ == "__main__":
     main()

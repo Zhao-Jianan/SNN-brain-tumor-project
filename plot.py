@@ -3,10 +3,15 @@ import matplotlib.pyplot as plt
 
 
 # 绘制图形的函数
-def plot_metrics(train_losses, val_losses, val_dices, val_hd95s, fold_number):
+def plot_metrics(train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, fold_number):
     epochs = range(1, len(train_losses) + 1)
 
-    plt.figure(figsize=(12, 4))
+    # 拆分 val_dices 为多个类别
+    val_dices_wt = [d['WT'] for d in val_dices]
+    val_dices_tc = [d['TC'] for d in val_dices]
+    val_dices_et = [d['ET'] for d in val_dices]
+
+    plt.figure(figsize=(15, 4))
 
     # Loss 曲线
     plt.subplot(1, 3, 1)
@@ -19,8 +24,11 @@ def plot_metrics(train_losses, val_losses, val_dices, val_hd95s, fold_number):
 
     # Dice 曲线
     plt.subplot(1, 3, 2)
-    plt.plot(epochs, val_dices, 'g', label='Val Dice')
-    plt.title("Validation Dice Score")
+    plt.plot(epochs, val_dices_wt, label='WT Dice')
+    plt.plot(epochs, val_dices_tc, label='TC Dice')
+    plt.plot(epochs, val_dices_et, label='ET Dice')
+    plt.plot(epochs, val_mean_dices, label='Mean Dice', linestyle='--', color='black')
+    plt.title("Validation Dice Scores")
     plt.xlabel("Epoch")
     plt.ylabel("Dice")
     plt.legend()
