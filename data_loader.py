@@ -2,7 +2,7 @@ import os
 from monai.data import DataLoader
 from dataset import BraTSDataset
 from sklearn.model_selection import KFold
-
+from config import config as cfg
 
 
 def worker_init_fn(worker_id):
@@ -13,11 +13,13 @@ def build_data_dicts(case_dirs):
     根据 case_dirs 构造 MONAI 所需的 dict 格式
     """
     data_dicts = []
-    modalities = ['t1', 't1ce', 't2', 'flair']
+    modalities = cfg.modalities
+    sep = cfg.modality_separator
+    suffix = cfg.image_suffix
     for case_dir in case_dirs:
         case_name = os.path.basename(case_dir.rstrip('/'))
-        image_paths = [os.path.join(case_dir, f"{case_name}_{m}.nii") for m in modalities]
-        label_path = os.path.join(case_dir, f"{case_name}_seg.nii")
+        image_paths = [os.path.join(case_dir, f"{case_name}{sep}{m}{suffix}") for m in modalities]
+        label_path = os.path.join(case_dir, f"{case_name}{sep}seg{suffix}")
         data_dicts.append({"image": image_paths, "label": label_path})
     return data_dicts
 

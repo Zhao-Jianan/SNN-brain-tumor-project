@@ -1,17 +1,22 @@
 import os, traceback
+from typing import Union
 import numpy as np
 import nibabel as nib
 import torch
 from torch.utils.data import Dataset
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd, ConvertToMultiChannelBasedOnBratsClassesd,
-    RandSpatialCropd, RandFlipd, NormalizeIntensityd, RandScaleIntensityd, RandShiftIntensityd,
+    MapTransform, RandFlipd, NormalizeIntensityd, RandScaleIntensityd, RandShiftIntensityd,
     ToTensord, Orientationd, Spacingd
 )
 from monai.data import Dataset as MonaiDataset
 from monai.transforms.utils import allow_missing_keys_mode
 from spikingjelly.clock_driven.encoding import PoissonEncoder, LatencyEncoder
-
+from config import config as cfg
+from typing import Mapping, Hashable, Sequence
+from monai.data.meta_tensor import MetaTensor
+from monai.transforms.transform import Transform
+from monai.utils import TransformBackends
 
 class BraTSDataset(MonaiDataset):
     def __init__(self, data_dicts, T=8, patch_size=(128,128,128), num_classes=4, mode="train", encode_method='poisson', debug=False):
@@ -31,6 +36,10 @@ class BraTSDataset(MonaiDataset):
         self.encode_method = encode_method
         self.poisson_encoder = PoissonEncoder()
         self.latency_encoder = LatencyEncoder(self.T)
+        
+        self.sep = cfg.modality_separator
+        self.suffix = cfg.image_suffix
+        self.et_label = cfg.et_label
 
         # 读取数据，自动封装成 MetaTensor (带affine)
         self.load_transform = Compose([
@@ -38,7 +47,15 @@ class BraTSDataset(MonaiDataset):
             EnsureChannelFirstd(keys=["image", "label"]),  # 保证通道维度在前 (C, D, H, W)
             ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),  # [0: TC, 1: WT, 2: ET]
         ])
-
+        
+        self.load_transform_custom_convert = Compose([
+            LoadImaged(keys=["image", "label"]),  # 加载 nii，自动带 affine
+            EnsureChannelFirstd(keys=["image", "label"]),  # 保证通道维度在前 (C, D, H, W)
+            ConvertToMultiChannelBasedOnBrats2023Classesd(
+                keys="label"
+            ),  # [0: TC, 1: WT, 2: ET]
+        ])      
+        
         # 统一空间预处理
         self.preprocess = Compose([
             Orientationd(keys=["image", "label"], axcodes="RAS"),
@@ -66,9 +83,14 @@ class BraTSDataset(MonaiDataset):
 
     def __getitem__(self, idx):
         data = self.data_dicts[idx]
-        case_name = os.path.basename(data["label"]).replace("_seg.nii", "")
+        case_name = os.path.basename(data["label"]).replace(f"{self.sep}seg{self.suffix}", "")
 
-        data = self.load_transform(data)  # load nii -> MetaTensor (C, D, H, W) + affine
+        if self.et_label == 4:
+            data = self.load_transform(data)  # load nii -> MetaTensor (C, D, H, W) + affine
+        elif self.et_label == 3:
+            data = self.load_transform_custom_convert(data)  # load nii -> MetaTensor (C, D, H, W) + affine
+        else:
+            raise ValueError(f"Wrong ET Label in the config: {self.et_label}")
 
         img_meta = data["image"].meta
         label_meta = data["label"].meta
@@ -182,3 +204,59 @@ class BraTSDataset(MonaiDataset):
         x_max = x.amax(dim=[1, 2, 3], keepdim=True)
         x_rescaled = (x - x_min) / (x_max - x_min + 1e-8)
         return x_rescaled.clamp(0., 1.)
+
+
+NdarrayOrTensor = Union[np.ndarray, torch.Tensor, MetaTensor]
+
+class ConvertToMultiChannelBasedOnBrats2023Classes(Transform):
+    """
+    Convert BraTS 2023 labels (NCR/NET=1, ED=2, ET=3) to multi-channel labels:
+      - TC (Tumor core): labels 1 or 3
+      - WT (Whole tumor): labels 1 or 2 or 3
+      - ET (Enhancing tumor): label 3
+    Preserves MetaTensor meta information.
+    """
+
+    backend = [TransformBackends.TORCH, TransformBackends.NUMPY]
+
+    def __call__(self, img: NdarrayOrTensor) -> NdarrayOrTensor:
+        # 如果是 MetaTensor，取出数据和meta
+        if isinstance(img, MetaTensor):
+            meta = img.meta
+            img_data = img.as_tensor()  # 返回 torch.Tensor
+        elif isinstance(img, torch.Tensor):
+            meta = None
+            img_data = img
+        else:
+            meta = None
+            img_data = torch.from_numpy(img)  # 统一转 torch.Tensor 方便操作
+
+        # 如果是4维且第0维是1，去掉该通道维度（确保标签为 (D,H,W)）
+        if img_data.ndim == 4 and img_data.shape[0] == 1:
+            img_data = img_data.squeeze(0)
+
+        # 生成3个通道的标签mask
+        tc = (img_data == 1) | (img_data == 3)
+        wt = (img_data == 1) | (img_data == 2) | (img_data == 3)
+        et = (img_data == 3)
+
+        result = torch.stack([tc, wt, et], dim=0).to(dtype=torch.uint8)
+
+        # 如果有meta信息，用MetaTensor封装返回，否则直接返回tensor
+        if meta is not None:
+            return MetaTensor(result, meta=meta)
+        else:
+            return result
+        
+        
+        
+class ConvertToMultiChannelBasedOnBrats2023Classesd(MapTransform):
+    def __init__(self, keys: Sequence[Hashable], allow_missing_keys: bool = False):
+        super().__init__(keys, allow_missing_keys)
+        self.converter = ConvertToMultiChannelBasedOnBrats2023Classes()
+
+    def __call__(self, data: Mapping[Hashable, NdarrayOrTensor]) -> dict[Hashable, NdarrayOrTensor]:
+        d = dict(data)
+        for key in self.key_iterator(d):
+            d[key] = self.converter(d[key])
+        return d
