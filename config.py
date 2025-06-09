@@ -2,7 +2,7 @@ import torch
 
 class Config:
     def __init__(self):
-        self.gpu_name = 'cuda:2'
+        self.gpu_name = 'cuda:1'
         self.device = torch.device(self.gpu_name if torch.cuda.is_available() else "cpu")
         
         # BraTS2018
@@ -19,18 +19,18 @@ class Config:
         # self.image_suffix = ".nii.gz"    
         # self.et_label = 3
         
-        self.encode_method = 'poisson'
+        self.encode_method = 'poisson'  # poisson, latency, weighted_phase
         
         self.patch_size = [128, 128, 128]
         self.window_size = [it // 32 for it in self.patch_size]
 
-        self.T = 16
+        self.T = 6
         self.num_epochs = 200
-        self.batch_size = 2
+        self.batch_size = 1
         self.k_folds = 5
         self.loss_weights = [2.0, 1.0, 4.0]
 
-        self.num_workers = 16
+        self.num_workers = 8
 
         self.compute_hd = False
 

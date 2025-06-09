@@ -11,7 +11,7 @@ from monai.transforms import (
 )
 from monai.data import Dataset as MonaiDataset
 from monai.transforms.utils import allow_missing_keys_mode
-from spikingjelly.clock_driven.encoding import PoissonEncoder, LatencyEncoder
+from spikingjelly.clock_driven.encoding import PoissonEncoder, LatencyEncoder, WeightedPhaseEncoder
 from config import config as cfg
 from typing import Mapping, Hashable, Sequence
 from monai.data.meta_tensor import MetaTensor
@@ -36,6 +36,7 @@ class BraTSDataset(MonaiDataset):
         self.encode_method = encode_method
         self.poisson_encoder = PoissonEncoder()
         self.latency_encoder = LatencyEncoder(self.T)
+        self.weighted_phase_encoder = WeightedPhaseEncoder(self.T)
         
         self.sep = cfg.modality_separator
         self.suffix = cfg.image_suffix
@@ -155,7 +156,12 @@ class BraTSDataset(MonaiDataset):
             self.latency_encoder.encode(img_rescale)  # (T,1,C,D,H,W)
             spike = self.latency_encoder.spike
             x_seq = spike.squeeze(1)  # (T,C,D,H,W)
-            
+        elif self.encode_method == 'weighted_phase':
+            img_rescale = img_rescale * (1 - 2**(-self.T))
+            img_rescale = img_rescale.unsqueeze(0)  # (1,C,D,H,W)
+            self.weighted_phase_encoder.encode(img_rescale)  # (T,1,C,D,H,W)
+            spike = self.weighted_phase_encoder.spike.float()
+            x_seq = spike.squeeze(1)  # (T,C,D,H,W)    
         else:
             raise NotImplementedError(f"Encoding method '{self.encode_method}' is not implemented.")
         # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)

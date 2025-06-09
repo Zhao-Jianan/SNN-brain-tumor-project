@@ -11,6 +11,10 @@ from plot import plot_metrics
 from data_loader import get_data_loaders
 from config import config as cfg
 
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy("file_system")
+
+
 # 主执行流程：5折交叉验证
 def main():
     case_dirs = [os.path.join(cfg.root_dir, d) for d in os.listdir(cfg.root_dir) if os.path.isdir(os.path.join(cfg.root_dir, d))]
