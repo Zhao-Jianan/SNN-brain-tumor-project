@@ -56,6 +56,6 @@ def save_metrics_to_file(train_losses, val_losses, val_dices, val_mean_dices, va
         "val_hd95s": val_hd95s
     }
 
-    filepath = os.path.join(output_dir, f"fold_{fold}_metrics.json")
+    filepath = os.path.join(output_dir, f"fold_{fold+1}_metrics.json")
     with open(filepath, "w") as f:
         json.dump(data, f, indent=4)

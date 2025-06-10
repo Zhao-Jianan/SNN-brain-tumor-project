@@ -47,6 +47,6 @@ def plot_metrics(train_losses, val_losses, val_dices, val_mean_dices, val_hd95s,
     plt.tight_layout()
 
     os.makedirs("visualise", exist_ok=True)
-    save_path = f"visualise/metrics_fold{fold_number}.png"
+    save_path = f"visualise/metrics_fold{fold_number+1}.png"
     plt.savefig(save_path)
     plt.close()

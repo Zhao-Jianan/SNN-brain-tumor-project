@@ -84,12 +84,23 @@ class DiceLoss(nn.Module):
     
     
 class BratsDiceLoss(nn.Module):
-    def __init__(self, smooth_nr=0.0, smooth_dr=1e-5, squared_pred=True, sigmoid=True, weights=None):
+    def __init__(self, 
+                 smooth_nr=0.0, 
+                 smooth_dr=1e-5, 
+                 squared_pred=True, 
+                 sigmoid=True, 
+                 weights=None, 
+                 include_background=True,
+                 batch=False,
+                 reduction='mean'):
         super().__init__()
         self.smooth_nr = smooth_nr
         self.smooth_dr = smooth_dr
         self.squared_pred = squared_pred
         self.sigmoid = sigmoid
+        self.include_background = include_background
+        self.reduction = reduction
+        self.batch = batch
 
         if weights is None:
             self.weights = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32)
@@ -105,24 +116,55 @@ class BratsDiceLoss(nn.Module):
         """
         if self.sigmoid:
             pred = torch.sigmoid(pred)
+            
+        n_pred_ch = pred.shape[1]
+        
+        # 如果pred带背景通道，忽略背景通道，取通道1开始
+        if not self.include_background:
+            if n_pred_ch == 1:
+                print("single channel prediction, `include_background=False` ignored.")
+            else:
+                # if skipping background, removing first channel
+                target = target[:, 1:]
+                pred = pred[:, 1:]
 
         if self.squared_pred:
-            pred = pred ** 2
+            pred_sq = pred ** 2
+            target_sq = target ** 2
+        else:
+            pred_sq = pred
+            target_sq = target
 
-        dims = (0, 2, 3, 4)
-               
-        # 如果pred带背景通道，忽略背景通道，取通道1开始
-        if pred.shape[1] == 4:
-            pred = pred[:, 1:]
-        
+        if self.batch:
+            dims = (0, 2, 3, 4)
+        else:
+            dims = (2, 3, 4)
+       
         intersection = torch.sum(pred * target, dims)
-        cardinality = torch.sum(pred + target, dims)
+        cardinality = torch.sum(pred_sq + target_sq, dims)
 
         dice = (2. * intersection + self.smooth_nr) / (cardinality + self.smooth_dr)
         loss_per_channel = 1 - dice  # shape [3]
 
         weights = self.weights.to(pred.device)
 
-        weighted_loss = (loss_per_channel * weights).sum()
+        if self.reduction == 'mean':
+            weighted_loss = (loss_per_channel * weights).mean()
+        elif self.reduction == 'sum':
+            weighted_loss = (loss_per_channel * weights).sum()
+        else:
+            raise ValueError(f"Unsupported reduction type: {self.reduction}")
 
         return weighted_loss
+    
+    
+    
+def main():
+    loss_fn = BratsDiceLoss(squared_pred=True, sigmoid=True,include_background=True, batch=False, reduction='mean')
+    pred = torch.randn(3, 3, 128, 128, 128)  # logits
+    target = torch.randint(0, 1, (3, 3, 128, 128, 128)).float()  # one-hot mask
+    loss = loss_fn(pred, target)
+    print("Loss:", loss.item())
+    
+if __name__ == "__main__":
+    main()

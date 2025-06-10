@@ -6,7 +6,7 @@ from sklearn.model_selection import KFold
 from spiking_swin_unet_model_4layer_no_dropout import SpikingSwinUNet3D
 from losses import DiceCrossEntropyLoss, BratsDiceLoss
 from utils import init_weights, save_metrics_to_file
-from train import train_fold, get_scheduler_with_warmup
+from train_with_sliding_window_val import train_fold, get_scheduler_with_warmup
 from plot import plot_metrics
 from data_loader import get_data_loaders
 from config import config as cfg
@@ -34,7 +34,11 @@ def main():
 
     # 开始交叉验证
     for fold, (train_idx, val_idx) in enumerate(kf.split(case_dirs)):
-        model = SpikingSwinUNet3D(window_size=cfg.window_size, T=cfg.T, step_mode=cfg.step_mode).to(cfg.device)  # 模型
+        model = SpikingSwinUNet3D(
+            num_classes=cfg.num_classes,
+            window_size=cfg.window_size,
+            T=cfg.T,
+            step_mode=cfg.step_mode).to(cfg.device)  # 模型
         model.apply(init_weights)
         optimizer = optim.Adam(model.parameters(), lr=cfg.base_lr)
         scheduler = get_scheduler_with_warmup(optimizer, cfg.num_warmup_epochs, cfg.num_epochs, cfg.base_lr, cfg.min_lr)

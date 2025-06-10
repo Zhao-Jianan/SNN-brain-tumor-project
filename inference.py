@@ -2,7 +2,7 @@ import torch
 import nibabel as nib
 import numpy as np
 import os
-from spiking_window_swin_layer_model import SpikingSwinTransformer3D
+from spiking_swin_unet_model_4layer_no_dropout import SpikingSwinUNet3D
 import torch.nn.functional as F
 from config import config as cfg
 from spikingjelly.activation_based.encoding import PoissonEncoder
@@ -12,9 +12,8 @@ from monai.transforms import (
 from monai.data import MetaTensor
 from typing import List
 from copy import deepcopy
-
-
-
+import time
+from scipy.ndimage import binary_dilation, binary_erosion, generate_binary_structure
 
 class PoissonEncoderWrapper:
     def __init__(self, T):
@@ -36,13 +35,13 @@ class InferencePreprocessor:
         """
         self.modalities = modalities
         self.T = T
-        self.encoder = PoissonEncoder()
+        self.encoder = PoissonEncoderWrapper(T)
 
         # 定义 MONAI 的预处理 transform（用于每个 modality）
         self.transform = Compose([
             LoadImaged(keys=["img"], image_only=True),
             EnsureChannelFirstd(keys=["img"]),
-            NormalizeIntensityd(keys=["img"], nonzero=True, channel_wise=True)
+            # NormalizeIntensityd(keys=["img"], nonzero=True, channel_wise=True)
         ])
 
     def load_case(self, case_dir: str, case_name: str) -> torch.Tensor:
@@ -73,11 +72,26 @@ class InferencePreprocessor:
     
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         x = self.rescale_to_unit_range(x)
-        return self.encoder(x)
+        return self.encoder(x)  # 返回的是 [T, C, D, H, W]
 
 
+def zscore_patch(patch: torch.Tensor) -> torch.Tensor:
+    """
+    对每个 patch 按通道做 z-score 标准化。
+    输入 patch: Tensor [C, D, H, W]
+    """
+    patch = patch.clone()
+    for c in range(patch.shape[0]):
+        nonzero = patch[c][patch[c] != 0]
+        if nonzero.numel() > 0:
+            mean = nonzero.mean()
+            std = nonzero.std()
+            patch[c] = (patch[c] - mean) / (std + 1e-8)
+        else:
+            patch[c] = 0  # 全零通道则不处理
+    return patch
 
-def sliding_window_inference(image, model, encoder, window_size=(128, 128, 128), stride=(64, 64, 64), T=8, num_classes=4):
+def sliding_window_inference(image, model, encoder, window_size=(128, 128, 128), stride=(64, 64, 64), num_classes=3):
     """
     Sliding window inference for SNN segmentation
     """
@@ -95,11 +109,14 @@ def sliding_window_inference(image, model, encoder, window_size=(128, 128, 128),
         for h in range(0, H - ph + 1, sh):
             for w in range(0, W - pw + 1, sw):
                 patch = image[:, d:d+pd, h:h+ph, w:w+pw]
+                # 对 patch 做 z-score normalization（按通道）
+                patch = zscore_patch(patch)
                 x_seq = encoder(patch).to(device)  # [T, C, pd, ph, pw]
 
                 with torch.no_grad():
+                    x_seq = x_seq.unsqueeze(1)
                     out = model(x_seq)  # [1, C, pd, ph, pw]
-                    out = torch.softmax(out, dim=1)
+                    out = torch.sigmoid(out)
 
                 output_probs[:, d:d+pd, h:h+ph, w:w+pw] += out.squeeze(0)
                 count_map[:, d:d+pd, h:h+ph, w:w+pw] += 1
@@ -117,25 +134,77 @@ def sliding_window_inference(image, model, encoder, window_size=(128, 128, 128),
 
 def convert_prediction_to_label(pred: torch.Tensor) -> torch.Tensor:
     """
-    将模型输出的 TC/WT/ET 三通道 mask 转为单通道 Brats 原始标签：
-    1 = ED, 2 = NET, 4 = ET
+    BraTS标签转换，输入 pred顺序：TC, WT, ET
     """
-    # pred: [3, D, H, W] → TC, WT, ET
-    tc, wt, et = pred[0], pred[1], pred[2]  # 分别为 binary mask
-    result = torch.zeros_like(tc).int()
-    result[wt == 1] = 1       # Whole tumor (ED)
-    result[tc == 1] = 2       # Tumor core (NET)
-    result[et == 1] = 4       # Enhancing tumor (ET)
+    tc, wt, et = pred[0], pred[1], pred[2]
+    print("Sum TC:", pred[0].sum().item())
+    print("Sum WT:", pred[1].sum().item())
+    print("Sum ET:", pred[2].sum().item())
+
+    result = torch.zeros_like(tc, dtype=torch.int32)
+
+    # ET赋值4
+    result[et == 1] = 4
+
+    # TC去除ET赋1
+    tc_core = (tc == 1) & (et == 0)
+    result[tc_core] = 1
+
+    # WT去除TC和ET赋2
+    edema = (wt == 1) & (tc == 0) & (et == 0)
+    result[edema] = 2
+
     return result
+
+
+
+
+def postprocess_brats_label(pred_mask: np.ndarray) -> np.ndarray:
+    """
+    对BraTS预测标签做形态学后处理:
+    - ET (4) 膨胀
+    - NCR/NET (1) 腐蚀
+    - 其他保持不变
+    输入：
+        pred_mask: (H, W, D) ndarray, uint8，标签值为0,1,2,4
+    返回：
+        后处理后的标签mask，shape相同
+    """
+    structure = generate_binary_structure(rank=3, connectivity=1)  # 3D 结构元素，邻接6个方向
+    
+    # 分离各标签
+    et_mask = (pred_mask == 4)
+    ncr_mask = (pred_mask == 1)
+    edema_mask = (pred_mask == 2)
+
+    # ET膨胀，膨胀1个像素
+    et_dilated = binary_dilation(et_mask, structure=structure, iterations=1)
+
+    # NCR/NET腐蚀，腐蚀1个像素
+    ncr_eroded = binary_erosion(ncr_mask, structure=structure, iterations=1)
+
+    # 合成新的mask，优先级 ET > NCR > ED
+    new_mask = np.zeros_like(pred_mask)
+    new_mask[et_dilated] = 4
+    # 只在非ET区域赋NCR，避免腐蚀后越界覆盖ET
+    new_mask[(ncr_eroded) & (~et_dilated)] = 1
+    # ED只赋非ET非NCR区域
+    new_mask[(edema_mask) & (~et_dilated) & (~ncr_eroded)] = 2
+
+    # 其余部分为0（背景）
+    return new_mask
+
+
+
 
 def main():
     # 路径配置
-    case_dir = "./data/HGG/Brats18_2013_2_1"  # case文件夹
+    case_dir = "./data/HGG/Brats18_CBICA_AAB_1"  # case文件夹
     case_name = os.path.basename(case_dir)
 
     # 模型加载
-    model_ckpt = "./checkpoint/best_model_fold1.pth"  # 权重路径
-    model = SpikingSwinTransformer3D(T=cfg.T).to(cfg.device)
+    model_ckpt = "./checkpoint/brats-18-possion-nodropout-T10/best_model_fold4.pth"  # 权重路径
+    model = model = SpikingSwinUNet3D(window_size=cfg.window_size, T=cfg.T, step_mode=cfg.step_mode).to(cfg.device)  # 模型.to(cfg.device)
     model.load_state_dict(torch.load(model_ckpt, map_location=cfg.device))
     model.eval()
     model.num_classes = 3 
@@ -147,29 +216,42 @@ def main():
     img_tensor = preprocessor.load_case(case_dir, case_name)  # (4, D, H, W)
 
     # 推理
+    start_time = time.time()
     pred_mask = sliding_window_inference(
         img_tensor, model, preprocessor.encode, window_size=cfg.patch_size, stride = (64, 64, 64)
         )
+    
+    # 计时结束
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"Inference time: {elapsed_time:.2f} seconds")
 
     # 恢复原始空间形状（如果pad了，裁剪回去）
     original_img_path = os.path.join(case_dir, f'{case_name}_t1.nii')
     original_img = nib.load(original_img_path)
-    orig_shape = original_img.shape
-    # 注意原图是 (H,W,D) 这里要对应转换
-    # pred_mask 是 (D,H,W)
-    d0, h0, w0 = pred_mask.shape
-    # 若有pad，裁剪
-    if d0 > orig_shape[2] or h0 > orig_shape[0] or w0 > orig_shape[1]:
-        pred_mask = pred_mask[:orig_shape[2], :orig_shape[0], :orig_shape[1]]
+    
+    if isinstance(pred_mask, torch.Tensor):
+        pred_mask = pred_mask.cpu().numpy()
 
-    # 转置到 (H,W,D)
-    pred_mask = np.transpose(pred_mask, (1, 2, 0))
+    # pred_mask 是 (D, H, W)
+    h0, w0, d0 = pred_mask.shape
+    h_orig, w_orig, d_orig = original_img.shape
+    
+    # 如果有pad，裁剪回原图大小
+    if h0 > h_orig or w0 > w_orig or d0 > d_orig:
+        pred_mask = pred_mask[:h_orig, :w_orig, :d_orig]
+        
+        
+    # 后处理
+    pred_mask = postprocess_brats_label(pred_mask)
 
     # 保存预测结果
-    pred_nii = nib.Nifti1Image(pred_mask.astype(np.uint8), original_img.affine, original_img.header)
+    pred_mask = pred_mask.astype(np.uint8)
+    pred_nii = nib.Nifti1Image(pred_mask, original_img.affine, original_img.header)
     save_path = os.path.join(case_dir, f"{case_name}_pred_mask.nii.gz")
     nib.save(pred_nii, save_path)
     print(f"预测mask保存至: {save_path}")
+
 
 if __name__ == "__main__":
     main()
