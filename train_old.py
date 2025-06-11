@@ -2,63 +2,6 @@ import torch
 import numpy as np
 from metrics import dice_score_braTS, compute_hd95
 import time
-import torch.nn.functional as F
-from inference_helper import TemporalSlidingWindowInference
-from config import config as cfg
-from collections import defaultdict
-
-
-class SpikeRateMonitor:
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.spike_records = defaultdict(list)  # 每层的每step spike rate
-        self.handles = []
-
-    def _hook_fn(self, name):
-        def hook(module, input, output):
-            # output: expected shape = [T, B, C, D, H, W]
-            if isinstance(output, torch.Tensor) and output.dim() == 6:
-                # Time axis is 0
-                T, B, C, D, H, W = output.shape
-                spike_per_t = output.float().reshape(T, -1).mean(dim=1)  # [T], 每帧平均激活
-                self.spike_records[name].append(spike_per_t.cpu())  # append [T] tensor
-        return hook
-
-    def register_hooks(self, model):
-        self.reset()
-        for name, module in model.named_modules():
-            # 可根据你模型的结构筛选 spiking 层
-            if isinstance(module, torch.nn.Module) and 'Spiking' in str(type(module)):
-                handle = module.register_forward_hook(self._hook_fn(name))
-                self.handles.append(handle)
-
-    def remove_hooks(self):
-        for h in self.handles:
-            h.remove()
-        self.handles.clear()
-
-    def get_layer_avg_rates(self):
-        # 对每层返回：平均 spike rate（跨时间 + 跨 step）
-        return {
-            name: torch.cat(records, dim=0).mean().item()
-            for name, records in self.spike_records.items()
-        }
-
-    def get_full_record(self):
-        # 返回每层每 step 所有时间帧的记录
-        return {
-            name: torch.stack(records)  # shape: [N_steps, T]
-            for name, records in self.spike_records.items()
-        }
-
-    def print_summary(self):
-        print("\n Spike Rate Summary:")
-        for k, v in self.get_layer_avg_rates().items():
-            print(f"  {k}: {v:.4f}")
-
-
 
 # 训练配置
 # 线性预热 + 余弦退火
@@ -76,20 +19,9 @@ def get_scheduler_with_warmup(optimizer, num_warmup_epochs, num_total_epochs, ba
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-
-# monitor_train = SpikeRateMonitor()
-# monitor_val = SpikeRateMonitor()
-monitor_train = None
-monitor_val = None
-
-
 # 训练和验证函数
-def train(train_loader, model, optimizer, criterion, device, monitor=None):
+def train(train_loader, model, optimizer, criterion, device):
     model.train()
-    if monitor:
-        monitor.register_hooks(model)
-        monitor.reset()
-    
     running_loss = 0.0
     print('Train -------------->>>>>>>')
     for x_seq, y in train_loader:
@@ -122,35 +54,13 @@ def train(train_loader, model, optimizer, criterion, device, monitor=None):
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-    
-    if monitor:
-        monitor.print_summary()
-        monitor.remove_hooks()
         
     avg_loss = running_loss / len(train_loader)
     return avg_loss
 
 
-
-val_inferencer = None
-# 初始化滑动窗口推理器
-if cfg.val_crop_mode == 'sliding_window':
-    val_inferencer = TemporalSlidingWindowInference(
-        patch_size=cfg.patch_size,
-        overlap=cfg.overlap,
-        sw_batch_size=1,
-        encode_method=cfg.encode_method,
-        T=cfg.T,
-        num_classes=cfg.num_classes
-    )
-
-
-def validate(val_loader, model, criterion, device, compute_hd, monitor=None):
+def validate(val_loader, model, criterion, device, compute_hd):
     model.eval()
-    if monitor:
-        monitor.register_hooks(model)
-        monitor.reset()
-    
     total_loss = 0.0
     total_dice = {'TC': 0.0, 'WT': 0.0, 'ET': 0.0}
     hd95s = []
@@ -164,13 +74,10 @@ def validate(val_loader, model, criterion, device, compute_hd, monitor=None):
             if torch.isnan(y).any() or torch.isinf(y).any():
                 print(f"[FATAL] y contains NaN/Inf at batch, stopping.")
                 break
-            
+
             x_seq = x_seq.permute(1, 0, 2, 3, 4, 5).to(device)  # [T, B, 1, D, H, W]
             y_onehot = y.float().to(device)
-            if val_inferencer:
-                output = val_inferencer(x_seq, model)
-            else:
-                output = model(x_seq)  # [B, C, D, H, W]，未过 softmax
+            output = model(x_seq)  # [B, C, D, H, W]，未过 softmax
 
             loss = criterion(output, y_onehot)
 
@@ -192,10 +99,7 @@ def validate(val_loader, model, criterion, device, compute_hd, monitor=None):
                 hd95s.append(hd95)
 
             total_loss += loss.item()
-            
-    if monitor:
-        monitor.print_summary()
-        monitor.remove_hooks()
+
     num_batches = len(val_loader)
     avg_loss = total_loss / num_batches
     avg_dice = {k: v / num_batches for k, v in total_dice.items()}
@@ -216,41 +120,22 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
 
     best_dice = 0.0
     min_dice_threshold = 0.6
-    warmup_epochs = cfg.num_warmup_epochs
-    train_crop_mode = cfg.train_crop_mode
-
 
     for epoch in range(num_epochs):
         print(f'----------[Fold {fold}] Epoch {epoch+1}/{num_epochs} ----------')
-        if train_crop_mode == 'warmup_weighted_random':
-        # 计算当前中心 crop 概率（线性衰减）
-            if epoch < warmup_epochs:
-                prob = 1.0 - epoch / warmup_epochs  # 从1.0线性下降到0.0
-            else:
-                prob = 0.0
-
-            if hasattr(train_loader.dataset, 'center_crop_prob'):
-                train_loader.dataset.center_crop_prob = prob
-                if prob > 0:
-                    print(f"Epoch {epoch+1}: center crop prob = {prob:.2f}")
-            
-        train_start_time = time.time()
         
-        train_loss = train(train_loader, model, optimizer, criterion, device, monitor=monitor_train)
+        start_time = time.time()
+        
+        train_loss = train(train_loader, model, optimizer, criterion, device)
         
         # 计时结束
-        train_end_time = time.time()
-        train_elapsed_time = train_end_time - train_start_time
-        print(f"[Fold {fold}] Epoch {epoch+1} training time: {train_elapsed_time:.2f} seconds")
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"[Fold {fold}] Epoch {epoch+1} training time: {elapsed_time:.2f} seconds")
         
         train_losses.append(train_loss)
-        
-        val_start_time = time.time()
-        val_loss, val_dice, val_hd95 = validate(val_loader, model, criterion, device, compute_hd, monitor=monitor_val)
-        # 计时结束
-        val_end_time = time.time()
-        val_elapsed_time = val_end_time - val_start_time
-        print(f"[Fold {fold}] Epoch {epoch+1} val time: {val_elapsed_time:.2f} seconds")
+         
+        val_loss, val_dice, val_hd95 = validate(val_loader, model, criterion, device, compute_hd)
         val_mean_dice = sum(val_dice.values()) / 3
         val_losses.append(val_loss)
         val_dices.append(val_dice)
@@ -259,6 +144,8 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
             val_hd95s.append(val_hd95)
 
         val_dice_str = " | ".join([f"{k}: {v:.4f}" for k, v in val_dice.items()])
+
+
 
         print(f"[Fold {fold}] Epoch {epoch+1}/{num_epochs} | "
               f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
@@ -285,7 +172,7 @@ def train_fold(train_loader, val_loader, model, optimizer, criterion, device, nu
     train_losses, val_losses, val_dices, val_mean_dices, val_hd95s = train_one_fold(
         train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold+1, compute_hd, scheduler
     )
-    
+
     print(f"[Fold {fold+1}] Training Completed")
     
     return train_losses, val_losses, val_dices, val_mean_dices, val_hd95s

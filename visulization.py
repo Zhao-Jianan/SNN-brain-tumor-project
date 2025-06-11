@@ -78,15 +78,15 @@ def plot_modalities_with_masks(t1, t1ce, t2, flair, gt_mask, pred_mask, slice_id
 
 def main():
     # 设置数据目录和文件路径
-    data_dir = './data/HGG/Brats18_CBICA_AAB_1/'  # e.g., BraTS_XXXX/
-    case_name = 'Brats18_CBICA_AAB_1'
+    data_dir = './data/HGG/Brats18_2013_27_1'  # e.g., BraTS_XXXX/
+    case_name = os.path.basename(data_dir)
 
     t1_path = os.path.join(data_dir, case_name + '_t1.nii')
     t1ce_path = os.path.join(data_dir, case_name + '_t1ce.nii')
     t2_path = os.path.join(data_dir, case_name + '_t2.nii')
     flair_path = os.path.join(data_dir, case_name + '_flair.nii')
     gt_mask_path = os.path.join(data_dir, case_name + '_seg.nii')     # ground truth
-    pred_mask_path = os.path.join(data_dir, case_name + '_pred_mask.nii.gz') # model prediction
+    pred_mask_path = os.path.join(data_dir, case_name + '_pred_mask.nii') # model prediction
 
     # 加载图像数据
     t1 = load_nifti_image(t1_path)
@@ -96,7 +96,7 @@ def main():
     gt_mask = load_nifti_image(gt_mask_path).astype(np.uint8)
     pred_mask = load_nifti_image(pred_mask_path).astype(np.uint8)
     save_dir = './inference/'
-    save_path = os.path.join(save_dir, case_name + '_output1.png')
+    save_path = os.path.join(save_dir, case_name + '_output3.png')
 
     # 可视化中间层 (中间 slice 通常是肿瘤区域)
     best_slice = select_best_slice(gt_mask)

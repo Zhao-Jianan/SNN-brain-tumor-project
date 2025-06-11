@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 from medpy.metric import binary
 from surface_distance import compute_surface_distances, compute_robust_hausdorff
-
+from monai.metrics import DiceMetric
 
 
 # 评估函数

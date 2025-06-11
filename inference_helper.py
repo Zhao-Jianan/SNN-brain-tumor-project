@@ -136,8 +136,7 @@ class TemporalSlidingWindowInference:
                         patch_encoded = self.encode_spike_input(patch_img)  # [T, b, C, pd, ph, pw]
 
                         # Step 3.2: Model inference
-                        pred = predictor(patch_encoded)  # [T, b, C_out, pd, ph, pw]
-                        pred = pred.mean(dim=0)  # Temporal average -> [b, C_out, pd, ph, pw]
+                        pred = predictor(patch_encoded)  # [b, C_out, pd, ph, pw]
 
                         output[b_start:b_end, :, z:z+pd, y:y+ph, x:x+pw] += pred * weight_window
                         weight_map[:, :, z:z+pd, y:y+ph, x:x+pw] += weight_window

@@ -2,9 +2,6 @@ import torch
 import numpy as np
 from metrics import dice_score_braTS, compute_hd95
 import time
-import torch.nn.functional as F
-from inference_helper import TemporalSlidingWindowInference
-from config import config as cfg
 
 # 训练配置
 # 线性预热 + 余弦退火
@@ -62,18 +59,6 @@ def train(train_loader, model, optimizer, criterion, device):
     return avg_loss
 
 
-
-val_inferencer = TemporalSlidingWindowInference(
-    patch_size=cfg.patch_size,
-    overlap=0.125,
-    sw_batch_size=1,
-    encode_method=cfg.encode_method,
-    T=cfg.T,
-    num_classes=cfg.num_classes
-)
-
-
-
 def validate(val_loader, model, criterion, device, compute_hd):
     model.eval()
     total_loss = 0.0
@@ -92,8 +77,7 @@ def validate(val_loader, model, criterion, device, compute_hd):
 
             x_seq = x_seq.permute(1, 0, 2, 3, 4, 5).to(device)  # [T, B, 1, D, H, W]
             y_onehot = y.float().to(device)
-
-            output = val_inferencer(x_seq, model)
+            output = model(x_seq)  # [B, C, D, H, W]，未过 softmax
 
             loss = criterion(output, y_onehot)
 
@@ -136,24 +120,10 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
 
     best_dice = 0.0
     min_dice_threshold = 0.6
-    warmup_epochs = cfg.num_warmup_epochs
-    crop_mode = cfg.crop_mode
-    
 
     for epoch in range(num_epochs):
         print(f'----------[Fold {fold}] Epoch {epoch+1}/{num_epochs} ----------')
-        if crop_mode == 'warmup_weighted_random':
-        # 计算当前中心 crop 概率（线性衰减）
-            if epoch < warmup_epochs:
-                prob = 1.0 - epoch / warmup_epochs  # 从1.0线性下降到0.0
-            else:
-                prob = 0.0
-
-            if hasattr(train_loader.dataset, 'center_crop_prob'):
-                train_loader.dataset.center_crop_prob = prob
-                if prob > 0:
-                    print(f"Epoch {epoch+1}: center crop prob = {prob:.2f}")
-            
+        
         train_start_time = time.time()
         
         train_loss = train(train_loader, model, optimizer, criterion, device)
@@ -171,6 +141,7 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
         val_end_time = time.time()
         val_elapsed_time = val_end_time - val_start_time
         print(f"[Fold {fold}] Epoch {epoch+1} val time: {val_elapsed_time:.2f} seconds")
+        
         val_mean_dice = sum(val_dice.values()) / 3
         val_losses.append(val_loss)
         val_dices.append(val_dice)
@@ -207,7 +178,7 @@ def train_fold(train_loader, val_loader, model, optimizer, criterion, device, nu
     train_losses, val_losses, val_dices, val_mean_dices, val_hd95s = train_one_fold(
         train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold+1, compute_hd, scheduler
     )
-    
+
     print(f"[Fold {fold+1}] Training Completed")
     
     return train_losses, val_losses, val_dices, val_mean_dices, val_hd95s

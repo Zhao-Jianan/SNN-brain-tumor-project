@@ -2,7 +2,7 @@ import torch
 
 class Config:
     def __init__(self):
-        self.gpu_name = 'cuda:7'
+        self.gpu_name = 'cuda:1'
         self.device = torch.device(self.gpu_name if torch.cuda.is_available() else "cpu")
         
         # BraTS2018
@@ -25,17 +25,19 @@ class Config:
         self.window_size = [it // 32 for it in self.patch_size]
         
         self.num_classes = 3
-        self.T = 6
+        self.T = 4
         self.num_epochs = 300
         self.batch_size = 1
         self.k_folds = 5
-        self.loss_weights = [2.0, 1.0, 4.0]
-        self.crop_mode = "tumor_aware_random"  # tumor_aware_random, warmup_weighted_random, random
+        self.loss_weights = [1.0, 1.0, 1.0]
+        self.train_crop_mode = "random"  # tumor_aware_random, warmup_weighted_random, random
+        self.val_crop_mode = 'random' # tumor_aware_random, sliding_window, random
+        self.overlap = 0.5
         self.num_workers = 8
 
         self.compute_hd = False
 
-        self.base_lr = 1e-3
+        self.base_lr = 3e-3
         self.num_warmup_epochs = 15
         self.min_lr = 1e-6
 

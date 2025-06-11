@@ -4,9 +4,9 @@ import torch
 import torch.optim as optim
 from sklearn.model_selection import KFold
 from spiking_swin_unet_model_4layer_no_dropout import SpikingSwinUNet3D
-from losses import DiceCrossEntropyLoss, BratsDiceLoss
+from losses import BratsDiceLoss
 from utils import init_weights, save_metrics_to_file
-from train_with_sliding_window_val import train_fold, get_scheduler_with_warmup
+from train import train_fold, get_scheduler_with_warmup
 from plot import plot_metrics
 from data_loader import get_data_loaders
 from config import config as cfg
@@ -40,7 +40,7 @@ def main():
             T=cfg.T,
             step_mode=cfg.step_mode).to(cfg.device)  # 模型
         model.apply(init_weights)
-        optimizer = optim.Adam(model.parameters(), lr=cfg.base_lr)
+        optimizer = optim.AdamW(model.parameters(), lr=cfg.base_lr, eps=1e-8, weight_decay=1e-4)
         scheduler = get_scheduler_with_warmup(optimizer, cfg.num_warmup_epochs, cfg.num_epochs, cfg.base_lr, cfg.min_lr)
 
         # 根据交叉验证划分数据集

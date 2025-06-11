@@ -7,129 +7,68 @@ import torch.nn.functional as F
 from config import config as cfg
 from spikingjelly.activation_based.encoding import PoissonEncoder
 from monai.transforms import (
-    Compose, LoadImaged, EnsureChannelFirstd, NormalizeIntensityd
+    Compose, LoadImaged, EnsureChannelFirstd, NormalizeIntensityd,
+    Orientationd, Spacingd, ToTensord
     )
-from monai.data import MetaTensor
-from typing import List
 from copy import deepcopy
 import time
 from scipy.ndimage import binary_dilation, binary_erosion, generate_binary_structure
-
-class PoissonEncoderWrapper:
-    def __init__(self, T):
-        self.T = T
-        self.encoder = PoissonEncoder()
-
-    def __call__(self, img):
-        # img: Tensor [C, D, H, W]
-        # 返回Tensor [T, C, D, H, W]
-        return torch.stack([self.encoder(img) for _ in range(self.T)], dim=0)
+from inference_helper import TemporalSlidingWindowInference
 
 
-
-class InferencePreprocessor:
-    def __init__(self, modalities: List[str], T: int):
-        """
-        :param modalities: 模态名称列表，如 ['t1', 't1ce', 't2', 'flair']
-        :param T: 时间步数，用于泊松编码
-        """
-        self.modalities = modalities
-        self.T = T
-        self.encoder = PoissonEncoderWrapper(T)
-
-        # 定义 MONAI 的预处理 transform（用于每个 modality）
-        self.transform = Compose([
-            LoadImaged(keys=["img"], image_only=True),
-            EnsureChannelFirstd(keys=["img"]),
-            # NormalizeIntensityd(keys=["img"], nonzero=True, channel_wise=True)
-        ])
-
-    def load_case(self, case_dir: str, case_name: str) -> torch.Tensor:
-        """
-        加载并归一化多模态 MRI 图像，返回 tensor (C, D, H, W)，并保留 affine
-        """
-        imgs = []
-        for mod in self.modalities:
-            path = os.path.join(case_dir, f'{case_name}_{mod}.nii')
-            data_dict = {"img": path}
-            normalized = self.transform(deepcopy(data_dict))["img"]  # (1, D, H, W)
-            img = normalized.squeeze(0).numpy()  # 去掉 channel 维度 (D, H, W)
-            img = np.transpose(img, (0, 1, 2))  # 保持 D, H, W
-            imgs.append(img)
-        
-        imgs = np.stack(imgs, axis=0)  # (4, D, H, W)
-        return torch.tensor(imgs).float()
-
-    def rescale_to_unit_range(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        将每个样本缩放到 0–1，按通道分别处理。用于编码器输入。
-        输入 x: Tensor [C, D, H, W]
-        """
-        x_min = x.amin(dim=[1, 2, 3], keepdim=True)
-        x_max = x.amax(dim=[1, 2, 3], keepdim=True)
-        x_rescaled = (x - x_min) / (x_max - x_min + 1e-8)
-        return x_rescaled.clamp(0., 1.)
+def preprocess_for_inference(image_paths, T=8):
+    """
+    image_paths: list of 4 modality paths [t1, t1ce, t2, flair]
     
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.rescale_to_unit_range(x)
-        return self.encoder(x)  # 返回的是 [T, C, D, H, W]
-
-
-def zscore_patch(patch: torch.Tensor) -> torch.Tensor:
+    Returns:
+        x_seq: torch.Tensor, shape (T, C, D, H, W)
     """
-    对每个 patch 按通道做 z-score 标准化。
-    输入 patch: Tensor [C, D, H, W]
-    """
-    patch = patch.clone()
-    for c in range(patch.shape[0]):
-        nonzero = patch[c][patch[c] != 0]
-        if nonzero.numel() > 0:
-            mean = nonzero.mean()
-            std = nonzero.std()
-            patch[c] = (patch[c] - mean) / (std + 1e-8)
-        else:
-            patch[c] = 0  # 全零通道则不处理
-    return patch
+    data_dict = {"image": image_paths}
+    
+    # Step 1: Load + Channel First
+    load_transform = Compose([
+        LoadImaged(keys=["image"]),
+        EnsureChannelFirstd(keys=["image"]),
+    ])
+    data = load_transform(data_dict)
+    data["image"] = data["image"].permute(0, 3, 1, 2)
+    print("Loaded image shape:", data["image"].shape)  # (C, D, H, W)
+    
+    img_meta = data["image"].meta
+    img_spacing = img_meta.get("pixdim", None)
 
-def sliding_window_inference(image, model, encoder, window_size=(128, 128, 128), stride=(64, 64, 64), num_classes=3):
-    """
-    Sliding window inference for SNN segmentation
-    """
-    device = next(model.parameters()).device
-    model.eval()
+    # Step 2: Spatial Normalization (Orientation + Spacing)
+    need_orientation_or_spacing = False
+    if img_meta.get("spatial_shape") is None:
+        need_orientation_or_spacing = True
+    else:
+        if not torch.allclose(torch.tensor(img_spacing[:3]), torch.tensor([1.0, 1.0, 1.0])):
+            need_orientation_or_spacing = True
+        if not (img_meta.get("original_channel_dim", None) == 0 and img_meta.get("original_affine", None) is not None):
+            need_orientation_or_spacing = True
+    
+    if need_orientation_or_spacing:
+        print("DO PREPROCESS!!!")
+        preprocess = Compose([
+            Orientationd(keys=["image"], axcodes="RAS"),
+            Spacingd(keys=["image"], pixdim=(1.0, 1.0, 1.0), mode="bilinear"),
+        ])
+        data = preprocess(data)
+    
+    # Step 3: Intensity Normalization
+    normalize = NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True)
+    data = normalize(data)
+    
+    # Step 4: ToTensor
+    to_tensor = ToTensord(keys=["image"])
+    data = to_tensor(data)
+    
+    # Step 5: Repeat T times to add temporal dimension
+    img = data["image"]  # shape: (C, D, H, W)
+    img_seq = img.unsqueeze(0).unsqueeze(0).repeat(T, 1, 1, 1, 1, 1)  # (T, B=1, C, D, H, W)
+    
+    return img_seq
 
-    C, D, H, W = image.shape
-    pd, ph, pw = window_size
-    sd, sh, sw = stride
-
-    output_probs = torch.zeros((num_classes, D, H, W), dtype=torch.float32, device=device)
-    count_map = torch.zeros((1, D, H, W), dtype=torch.float32, device=device)
-
-    for d in range(0, D - pd + 1, sd):
-        for h in range(0, H - ph + 1, sh):
-            for w in range(0, W - pw + 1, sw):
-                patch = image[:, d:d+pd, h:h+ph, w:w+pw]
-                # 对 patch 做 z-score normalization（按通道）
-                patch = zscore_patch(patch)
-                x_seq = encoder(patch).to(device)  # [T, C, pd, ph, pw]
-
-                with torch.no_grad():
-                    x_seq = x_seq.unsqueeze(1)
-                    out = model(x_seq)  # [1, C, pd, ph, pw]
-                    out = torch.sigmoid(out)
-
-                output_probs[:, d:d+pd, h:h+ph, w:w+pw] += out.squeeze(0)
-                count_map[:, d:d+pd, h:h+ph, w:w+pw] += 1
-
-    count_map[count_map == 0] = 1
-    output_probs /= count_map
-    # 二值化每个通道
-    binary_pred = (output_probs > 0.5).int().cpu()  # [3, D, H, W]
-
-    # 转换为单通道 BraTS 标签格式
-    pred = convert_prediction_to_label(binary_pred)  # [D, H, W]
-
-    return pred
 
 
 def convert_prediction_to_label(pred: torch.Tensor) -> torch.Tensor:
@@ -155,8 +94,6 @@ def convert_prediction_to_label(pred: torch.Tensor) -> torch.Tensor:
     result[edema] = 2
 
     return result
-
-
 
 
 def postprocess_brats_label(pred_mask: np.ndarray) -> np.ndarray:
@@ -195,63 +132,67 @@ def postprocess_brats_label(pred_mask: np.ndarray) -> np.ndarray:
     return new_mask
 
 
-
-
-def main():
-    # 路径配置
-    case_dir = "./data/HGG/Brats18_CBICA_AAB_1"  # case文件夹
+def inference_single_case(case_dir, model, inference_engine, device, T=8):
+    # 用cfg.modalities拼4模态路径
     case_name = os.path.basename(case_dir)
+    image_paths = [os.path.join(case_dir, f"{case_name}_{mod}.nii") for mod in cfg.modalities]
 
-    # 模型加载
-    model_ckpt = "./checkpoint/brats-18-possion-nodropout-T10/best_model_fold4.pth"  # 权重路径
-    model = model = SpikingSwinUNet3D(window_size=cfg.window_size, T=cfg.T, step_mode=cfg.step_mode).to(cfg.device)  # 模型.to(cfg.device)
-    model.load_state_dict(torch.load(model_ckpt, map_location=cfg.device))
-    model.eval()
-    model.num_classes = 3 
+    # 预处理，返回 (T, C, D, H, W) Tensor
+    x_seq = preprocess_for_inference(image_paths, T=T)
+    x_seq = x_seq.to(device)
 
-    # 推理处理器
-    preprocessor = InferencePreprocessor(modalities=cfg.modalities, T=cfg.T)
-
-    # 图像加载与预处理
-    img_tensor = preprocessor.load_case(case_dir, case_name)  # (4, D, H, W)
-
-    # 推理
-    start_time = time.time()
-    pred_mask = sliding_window_inference(
-        img_tensor, model, preprocessor.encode, window_size=cfg.patch_size, stride = (64, 64, 64)
-        )
     
+    start_time = time.time()
+    # sliding window推理
+    with torch.no_grad():
+        output = inference_engine(x_seq, model)
+        
     # 计时结束
     end_time = time.time()
     elapsed_time = end_time - start_time
     print(f"Inference time: {elapsed_time:.2f} seconds")
 
-    # 恢复原始空间形状（如果pad了，裁剪回去）
-    original_img_path = os.path.join(case_dir, f'{case_name}_t1.nii')
-    original_img = nib.load(original_img_path)
+    # 阈值二值化，模型输出已mean
+    output_prob = torch.sigmoid(output)
+    output_bin = (output_prob > 0.5).int().squeeze(0)
+
+    # 转换标签格式，后处理
+    label_raw = convert_prediction_to_label(output_bin)
+    label_np = label_raw.cpu().numpy().astype(np.uint8)
+    label_np = np.transpose(label_np, (1, 2, 0))
+    label_post = postprocess_brats_label(label_np)
+    label_post = np.transpose(label_post, (2, 0, 1))
+
+    # 以t1ce为参考保存nii
+    ref_nii = nib.load(image_paths[cfg.modalities.index('t1ce')])
+    pred_nii = nib.Nifti1Image(label_post, affine=ref_nii.affine, header=ref_nii.header)
+
+    out_path = os.path.join(case_dir, f"{case_name}_pred_mask.nii")
+    nib.save(pred_nii, out_path)
+    print(f"Saved prediction: {out_path}")
+
     
-    if isinstance(pred_mask, torch.Tensor):
-        pred_mask = pred_mask.cpu().numpy()
 
-    # pred_mask 是 (D, H, W)
-    h0, w0, d0 = pred_mask.shape
-    h_orig, w_orig, d_orig = original_img.shape
+def main():
+    case_dir = "./data/HGG/Brats18_2013_27_1"
+    model_ckpt = "./checkpoint/tumor_center_crop_best_model_fold1.pth"
+
+    model = SpikingSwinUNet3D(window_size=cfg.window_size, T=cfg.T, step_mode=cfg.step_mode).to(cfg.device)  # 模型.to(cfg.device)
+    model.load_state_dict(torch.load(model_ckpt, map_location=cfg.device))
+    model.eval()
+
+    inference_engine = TemporalSlidingWindowInference(
+        patch_size=cfg.patch_size,
+        overlap=cfg.overlap,
+        sw_batch_size=1,
+        encode_method=cfg.encode_method,
+        T=cfg.T,
+        num_classes=cfg.num_classes
+    )
     
-    # 如果有pad，裁剪回原图大小
-    if h0 > h_orig or w0 > w_orig or d0 > d_orig:
-        pred_mask = pred_mask[:h_orig, :w_orig, :d_orig]
-        
-        
-    # 后处理
-    pred_mask = postprocess_brats_label(pred_mask)
+    inference_single_case(case_dir, model, inference_engine, cfg.device, T=cfg.T)
 
-    # 保存预测结果
-    pred_mask = pred_mask.astype(np.uint8)
-    pred_nii = nib.Nifti1Image(pred_mask, original_img.affine, original_img.header)
-    save_path = os.path.join(case_dir, f"{case_name}_pred_mask.nii.gz")
-    nib.save(pred_nii, save_path)
-    print(f"预测mask保存至: {save_path}")
-
+    
 
 if __name__ == "__main__":
     main()

@@ -53,7 +53,7 @@ def main():
         val_case_dirs = [case_dirs[i] for i in val_idx]
 
         # 训练和验证数据加载器
-        train_loader, val_loader = get_data_loaders(train_case_dirs, val_case_dirs, cfg.batch_size, cfg.T, cfg.num_workers)
+        train_loader, val_loader = get_data_loaders(train_case_dirs, val_case_dirs, cfg.patch_size, cfg.batch_size, cfg.T, cfg.encode_method, cfg.num_workers)
         
 
         print("Iterate one batch from val_loader:")
