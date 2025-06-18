@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from spikingjelly.activation_based import neuron, functional, surrogate, layer, base
+from config import config as cfg
 
 # 使用spikingjelly的多步模式
 class LayerNorm3D(base.MemoryModule):
@@ -315,7 +316,7 @@ class SpikingAddConverge3D(base.MemoryModule):
 
 
 class SpikingSwinUNet3D(base.MemoryModule):
-    def __init__(self, in_channels=4, num_classes=3, embed_dim=96, layers=[2, 2, 4, 2], num_heads=[4, 6, 8, 12],
+    def __init__(self, in_channels=4, num_classes=3, embed_dim=cfg.embed_dim, layers=[2, 2, 4, 2], num_heads=cfg.num_heads,
                  window_size=(4,4,4), dropout=0.1, T=8, step_mode='s'):
         super().__init__()
         self.T = T

@@ -213,6 +213,7 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
     val_dices = []
     val_mean_dices = []
     val_hd95s = []
+    lr_history = []
 
     best_dice = 0.0
     min_dice_threshold = 0.6
@@ -274,19 +275,23 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
 
         if scheduler is not None:
             scheduler.step()  # 更新学习率
+            # 打印当前学习率
+            current_lrs = [param_group['lr'] for param_group in optimizer.param_groups]
+            print(f"Epoch {epoch+1} learning rate(s): {current_lrs[0]}")
+            lr_history.append(current_lrs[0]) 
 
-    return train_losses, val_losses, val_dices, val_mean_dices, val_hd95s
+    return train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history
 
 
 # 折训练函数
 def train_fold(train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold, compute_hd, scheduler):
     print(f"\n[Fold {fold+1}] Training Started")
     
-    train_losses, val_losses, val_dices, val_mean_dices, val_hd95s = train_one_fold(
+    train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history = train_one_fold(
         train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold+1, compute_hd, scheduler
     )
     
     print(f"[Fold {fold+1}] Training Completed")
     
-    return train_losses, val_losses, val_dices, val_mean_dices, val_hd95s
+    return train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history
 

@@ -12,7 +12,7 @@ from monai.transforms import (
     )
 from copy import deepcopy
 import time
-from scipy.ndimage import binary_dilation, binary_erosion, generate_binary_structure
+from scipy.ndimage import binary_dilation, binary_opening, generate_binary_structure
 from inference_helper import TemporalSlidingWindowInference
 
 
@@ -76,22 +76,27 @@ def convert_prediction_to_label(pred: torch.Tensor) -> torch.Tensor:
     BraTS标签转换，输入 pred顺序：TC, WT, ET
     """
     tc, wt, et = pred[0], pred[1], pred[2]
-    print("Sum TC:", pred[0].sum().item())
-    print("Sum WT:", pred[1].sum().item())
-    print("Sum ET:", pred[2].sum().item())
 
     result = torch.zeros_like(tc, dtype=torch.int32)
 
-    # ET赋值4
+    # ET赋4
     result[et == 1] = 4
 
-    # TC去除ET赋1
-    tc_core = (tc == 1) & (et == 0)
-    result[tc_core] = 1
+    # TC赋1，排除ET
+    tc_only = (tc == 1) & (et == 0)
+    result[tc_only] = 1
 
-    # WT去除TC和ET赋2
-    edema = (wt == 1) & (tc == 0) & (et == 0)
-    result[edema] = 2
+    # ED = WT - (TC + ET)
+    edema_only = (wt == 1) & (tc == 0) & (et == 0)
+    result[edema_only] = 2
+    
+    print("Sum TC:", tc.sum().item())
+    print("Sum WT:", wt.sum().item())
+    print("Sum ET:", et.sum().item())
+    print("Result summary:")
+    print("Sum NCR:", (result == 1).sum().item())
+    print("Sum ED:", (result == 2).sum().item())
+    print("Sum ET:", (result == 4).sum().item())
 
     return result
 
@@ -99,36 +104,46 @@ def convert_prediction_to_label(pred: torch.Tensor) -> torch.Tensor:
 def postprocess_brats_label(pred_mask: np.ndarray) -> np.ndarray:
     """
     对BraTS预测标签做形态学后处理:
-    - ET (4) 膨胀
-    - NCR/NET (1) 腐蚀
-    - 其他保持不变
+    - ET (4) 膨胀1个像素
+    - NCR/NET (1) 保持原状或开运算平滑
+    - ED (2) 保持原状
     输入：
         pred_mask: (H, W, D) ndarray, uint8，标签值为0,1,2,4
     返回：
         后处理后的标签mask，shape相同
     """
-    structure = generate_binary_structure(rank=3, connectivity=1)  # 3D 结构元素，邻接6个方向
-    
-    # 分离各标签
+    structure = generate_binary_structure(rank=3, connectivity=1)  # 3D结构元素，邻接6个方向
+
+    # 分离各标签mask
     et_mask = (pred_mask == 4)
     ncr_mask = (pred_mask == 1)
     edema_mask = (pred_mask == 2)
+    print("Before Postprocessing:")
+    print("Sum ET:", np.sum(et_mask))
+    print("Sum ED:", np.sum(edema_mask))
+    print("Sum NCR:", np.sum(ncr_mask))
 
-    # ET膨胀，膨胀1个像素
+    # ET膨胀1个像素
     et_dilated = binary_dilation(et_mask, structure=structure, iterations=1)
+    et_dilated &= (edema_mask | et_mask) 
 
-    # NCR/NET腐蚀，腐蚀1个像素
-    ncr_eroded = binary_erosion(ncr_mask, structure=structure, iterations=1)
+    # NCR保持原状，或者用开运算平滑（可选）
+    # ncr_processed = binary_opening(ncr_mask, structure=structure, iterations=1)
+    ncr_processed = ncr_mask  # 保持原状
 
-    # 合成新的mask，优先级 ET > NCR > ED
-    new_mask = np.zeros_like(pred_mask)
+    # 初始化新的mask
+    new_mask = np.zeros_like(pred_mask, dtype=np.uint8)
+
+    # 按优先级分配：ET > ED > NCR
     new_mask[et_dilated] = 4
-    # 只在非ET区域赋NCR，避免腐蚀后越界覆盖ET
-    new_mask[(ncr_eroded) & (~et_dilated)] = 1
-    # ED只赋非ET非NCR区域
-    new_mask[(edema_mask) & (~et_dilated) & (~ncr_eroded)] = 2
+    new_mask[(edema_mask) & (new_mask == 0)] = 2
+    new_mask[(ncr_processed) & (new_mask == 0)] = 1
 
-    # 其余部分为0（背景）
+    # 背景默认是0，不用赋值
+    print("Postprocessing results:")
+    print("Sum ET:", np.sum(new_mask == 4))
+    print("Sum ED:", np.sum(new_mask == 2))
+    print("Sum NCR:", np.sum(new_mask == 1))
     return new_mask
 
 
@@ -160,12 +175,13 @@ def inference_single_case(case_dir, model, inference_engine, device, T=8):
     label_raw = convert_prediction_to_label(output_bin)
     label_np = label_raw.cpu().numpy().astype(np.uint8)
     label_np = np.transpose(label_np, (1, 2, 0))
-    label_post = postprocess_brats_label(label_np)
-    label_post = np.transpose(label_post, (2, 0, 1))
+    print("Label shape before postprocessing:", label_np.shape)  # (H, W, D)
+    # label_np = postprocess_brats_label(label_np)
+    print("Saved label shape:", label_np.shape)  # (H, W, D)
 
     # 以t1ce为参考保存nii
     ref_nii = nib.load(image_paths[cfg.modalities.index('t1ce')])
-    pred_nii = nib.Nifti1Image(label_post, affine=ref_nii.affine, header=ref_nii.header)
+    pred_nii = nib.Nifti1Image(label_np, affine=ref_nii.affine, header=ref_nii.header)
 
     out_path = os.path.join(case_dir, f"{case_name}_pred_mask.nii")
     nib.save(pred_nii, out_path)
@@ -183,10 +199,10 @@ def main():
 
     inference_engine = TemporalSlidingWindowInference(
         patch_size=cfg.patch_size,
-        overlap=cfg.overlap,
+        overlap=0.5, # cfg.overlap
         sw_batch_size=1,
         encode_method=cfg.encode_method,
-        T=cfg.T,
+        T= 10, # cfg.T
         num_classes=cfg.num_classes
     )
     

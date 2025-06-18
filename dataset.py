@@ -215,6 +215,26 @@ class BraTSDataset(MonaiDataset):
                 h_start = np.random.randint(0, H - ph + 1)
                 w_start = np.random.randint(0, W - pw + 1)
                 
+        elif mode == "tumor_center":
+        # 获取肿瘤前景 mask（任意类别）
+            foreground_mask = label.sum(axis=0) > 0
+            foreground_voxels = np.argwhere(foreground_mask.cpu().numpy())
+
+            if len(foreground_voxels) > 0:
+                # 从前景中随机选一个点作为 patch 中心
+                center = foreground_voxels[np.random.choice(len(foreground_voxels))]
+                cd, ch, cw = center
+
+                d_start = np.clip(cd - pd // 2, 0, D - pd)
+                h_start = np.clip(ch - ph // 2, 0, H - ph)
+                w_start = np.clip(cw - pw // 2, 0, W - pw)
+
+            else:
+                # 无肿瘤则随机裁剪
+                d_start = np.random.randint(0, D - pd + 1)
+                h_start = np.random.randint(0, H - ph + 1)
+                w_start = np.random.randint(0, W - pw + 1)
+                
         elif mode == "warmup_weighted_random":
             if random.random() < self.center_crop_prob:
                 # 偏向肿瘤区域的随机裁剪（带扰动）

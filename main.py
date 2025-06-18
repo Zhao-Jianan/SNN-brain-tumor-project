@@ -4,7 +4,7 @@ import torch
 import torch.optim as optim
 from sklearn.model_selection import KFold
 from spiking_swin_unet_model_4layer_no_dropout import SpikingSwinUNet3D
-from losses import BratsDiceLoss
+from losses import BratsDiceLoss, BratsFocalLoss
 from utils import init_weights, save_metrics_to_file
 from train import train_fold, get_scheduler_with_warmup
 from plot import plot_metrics
@@ -22,14 +22,22 @@ def main():
     print(cfg.device)
 
     # 设置损失函数和优化器
-    # criterion = DiceCrossEntropyLoss(weight=class_weights, dice_weight=2.0)
-    criterion = BratsDiceLoss(
-        smooth_nr=0,
-        smooth_dr=1e-5,
-        squared_pred=True,
-        sigmoid=True,
-        weights=cfg.loss_weights
-    )
+    if cfg.loss_function == 'focal':
+        criterion = BratsFocalLoss(
+            alpha=0.25,
+            gamma=2.0,
+            reduction='mean'
+        )
+    elif cfg.loss_function == 'dice':
+        criterion = BratsDiceLoss(
+            smooth_nr=0,
+            smooth_dr=1e-5,
+            squared_pred=True,
+            sigmoid=True,
+            weights=cfg.loss_weights
+        )
+    else:
+        raise ValueError(f"Unsupported loss function: {cfg.loss_function}")
     kf = KFold(n_splits=cfg.k_folds, shuffle=True)
 
     # 开始交叉验证
@@ -53,16 +61,16 @@ def main():
             )
 
         # 调用训练函数
-        train_losses, val_losses, val_dices, val_mean_dices, val_hd95s = train_fold(
+        train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history = train_fold(
             train_loader, val_loader, model, optimizer, criterion, cfg.device, cfg.num_epochs, fold, cfg.compute_hd, scheduler
         )
         
         # 保存指标
-        save_metrics_to_file(train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, fold)
+        save_metrics_to_file(train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history, fold)
 
         # 绘制训练过程的图形
         plot_metrics(
-            train_losses, val_losses,  val_dices, val_mean_dices, val_hd95s,fold
+            train_losses, val_losses,  val_dices, val_mean_dices, val_hd95s, lr_history, fold
         )
 
     print("\nTraining and Validation completed across all folds.")

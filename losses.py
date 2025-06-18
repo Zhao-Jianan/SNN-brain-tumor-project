@@ -114,9 +114,9 @@ class BratsDiceLoss(nn.Module):
         pred: [B, 3, D, H, W] 模型输出 logits 或概率
         target: [B, 3, D, H, W] one-hot 标签 [TC, WT, ET]
         """
+
         if self.sigmoid:
-            pred = torch.sigmoid(pred)
-            
+            pred = torch.sigmoid(pred)          
         n_pred_ch = pred.shape[1]
         
         # 如果pred带背景通道，忽略背景通道，取通道1开始
@@ -157,13 +157,48 @@ class BratsDiceLoss(nn.Module):
 
         return weighted_loss
     
-    
+   
+   
+class BratsFocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super(BratsFocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, pred, target):
+        """
+        inputs: (B, C, D, H, W) - raw logits
+        targets: (B, C, D, H, W) - one-hot labels with values in {0, 1}
+        """
+        assert pred.shape == target.shape, "Input and target must have the same shape"
+        target = target.float()
+        probs = torch.sigmoid(pred)
+        ce_loss = F.binary_cross_entropy_with_logits(pred, target, reduction='none')
+        p_t = probs * target + (1 - probs) * (1 - target)
+        focal_weight = (1 - p_t) ** self.gamma
+
+        loss = self.alpha * focal_weight * ce_loss
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:  # 'none'
+            return loss
+
     
 def main():
-    loss_fn = BratsDiceLoss(squared_pred=True, sigmoid=True,include_background=True, batch=False, reduction='mean')
-    pred = torch.randn(3, 3, 128, 128, 128)  # logits
-    target = torch.randint(0, 1, (3, 3, 128, 128, 128)).float()  # one-hot mask
-    loss = loss_fn(pred, target)
+    # loss_fn = BratsDiceLoss(squared_pred=True, sigmoid=True,include_background=True, batch=False, reduction='mean')
+    # pred = torch.randn(3, 3, 128, 128, 128)  # logits
+    # target = torch.randint(0, 1, (3, 3, 128, 128, 128)).float()  # one-hot mask
+    # loss = loss_fn(pred, target)
+    # print("Loss:", loss.item())
+    
+    loss_fn = BratsFocalLoss(alpha=0.25, gamma=2.0)
+    pred = torch.randn(1, 3, 128, 128, 128)  # logits
+    target = torch.randint(0, 1, (1, 3, 128, 128, 128)).float()  # one-hot mask
+    loss = loss_fn(pred, target)  # pred_logits: raw output before sigmoid
     print("Loss:", loss.item())
     
 if __name__ == "__main__":

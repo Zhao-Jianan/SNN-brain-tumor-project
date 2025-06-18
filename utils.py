@@ -38,7 +38,7 @@ def init_weights(module):
             nn.init.constant_(module.out_proj.bias, 0)
 
 
-def save_metrics_to_file(train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, fold, output_dir="metrics"):
+def save_metrics_to_file(train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history, fold, output_dir="metrics"):
     os.makedirs(output_dir, exist_ok=True)
 
     # 拆分 val_dices 字典数组为独立的列表
@@ -53,7 +53,8 @@ def save_metrics_to_file(train_losses, val_losses, val_dices, val_mean_dices, va
         "val_dices_tc": val_dices_tc,
         "val_dices_et": val_dices_et,
         "val_mean_dices": val_mean_dices,
-        "val_hd95s": val_hd95s
+        "val_hd95s": val_hd95s,
+        "lr_history": lr_history
     }
 
     filepath = os.path.join(output_dir, f"fold_{fold+1}_metrics.json")
