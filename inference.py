@@ -2,7 +2,7 @@ import torch
 import nibabel as nib
 import numpy as np
 import os
-from spiking_swin_unet_model_4layer_no_dropout import SpikingSwinUNet3D
+from spiking_swin_unet_model import SpikingSwinUNet3D
 import torch.nn.functional as F
 from config import config as cfg
 from spikingjelly.activation_based.encoding import PoissonEncoder

@@ -197,33 +197,65 @@ class SpikingSwinTransformerBlock3D(base.MemoryModule):
         self.sn2 = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)       
         self.dropout = layer.Dropout(dropout, step_mode=step_mode)
 
-
     def forward(self, x):
+        if self.step_mode == 's':
+            # -------------------------------
+            # 单步输入: [B, C, D, H, W]
+            # -------------------------------
+            residual = x
+            x = self.norm1(x)
+            x = self.attn(x)
+            x = x + residual
 
-        residual = x
-        x = self.norm1(x)
-        x = self.attn(x)
-        x = x + residual
+            residual = x
+            x = self.norm2(x)
 
-        residual = x
-        x = self.norm2(x)
-        
-        T, B, C, D, H, W = x.shape
-        x = x.permute(0, 1, 3, 4, 5, 2)  # (T, B, D, H, W, C)
-        x = x.reshape(T * B, D * H * W, C)  # (T*B, N, C) N = D*H*W
+            B, C, D, H, W = x.shape
+            x = x.permute(0, 2, 3, 4, 1).contiguous()  # (B, D, H, W, C)
+            x = x.view(B, D * H * W, C)  # (B, N, C)
 
-        x = self.linear1(x)
-        x = self.sn1(x)
-        x = self.linear2(x)
-        x = self.sn2(x)
-        x = self.dropout(x)
-        
-        # 还原维度回 (T, B, C, D, H, W)
-        x = x.reshape(T, B, D, H, W, C)
-        x = x.permute(0, 1, 5, 2, 3, 4)
-    
-        x = x + residual
-        return x
+            x = self.linear1(x)
+            x = self.sn1(x)
+            x = self.linear2(x)
+            x = self.sn2(x)
+            x = self.dropout(x)
+
+            x = x.view(B, D, H, W, C)
+            x = x.permute(0, 4, 1, 2, 3).contiguous()  # (B, C, D, H, W)
+            
+            x = x + residual
+            return x
+
+        elif self.step_mode == 'm':
+            # -------------------------------
+            # 多步输入: [T, B, C, D, H, W]
+            # -------------------------------
+            residual = x
+            x = self.norm1(x)
+            x = self.attn(x)
+            x = x + residual
+
+            residual = x
+            x = self.norm2(x)
+
+            T, B, C, D, H, W = x.shape
+            x = x.permute(0, 1, 3, 4, 5, 2).contiguous()  # (T, B, D, H, W, C)
+            x = x.view(T * B, D * H * W, C)  # (T*B, N, C)
+
+            x = self.linear1(x)
+            x = self.sn1(x)
+            x = self.linear2(x)
+            x = self.sn2(x)
+            x = self.dropout(x)
+
+            x = x.view(T, B, D, H, W, C)
+            x = x.permute(0, 1, 5, 2, 3, 4).contiguous()  # (T, B, C, D, H, W)
+
+            x = x + residual
+            return x
+
+        else:
+            raise NotImplementedError(f"Unsupported step_mode: {self.step_mode}")
 
 
 class SpikingSwinTransformerStage3D(base.MemoryModule):
@@ -382,7 +414,7 @@ class SpikingSwinUNet3D(base.MemoryModule):
                 e3 = self.patch_embed3(e2)
                 e3 = self.down_stage3(e3)               # e3 shape: [B, 384, 8, 8, 8]
 
-                feature = self.patch_embed3(e3)
+                feature = self.patch_embed4(e3)
                 feature = self.feature_stage(feature)       # e3 shape: [B, 768, 4, 4, 4]
 
                 d3 = self.patch_expand3(feature)      # d3 shape: [B, 384, 8, 8, 8]
@@ -439,3 +471,14 @@ class SpikingSwinUNet3D(base.MemoryModule):
             out = self.readout(d0)
             out = out.mean(0)
             return out
+        
+        
+def main():
+    # 测试模型
+    model = SpikingSwinUNet3D(in_channels=4, num_classes=3, embed_dim=96, layers=[2, 2, 4, 2], num_heads=[3, 6, 12, 24], window_size=(4, 4, 4), dropout=0.1, T=2, step_mode='s')
+    x = torch.randn(2, 1, 4, 128, 128, 128)  # 假设输入是一个 batch 的数据
+    output = model(x)
+    print(output.shape)  # 输出形状应该是 [1, 3, 128, 128, 128]
+    
+if __name__ == "__main__":
+    main()

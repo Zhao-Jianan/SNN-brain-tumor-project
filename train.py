@@ -61,19 +61,62 @@ class SpikeRateMonitor:
 
 
 # 训练配置
-# 线性预热 + 余弦退火
-def get_scheduler_with_warmup(optimizer, num_warmup_epochs, num_total_epochs, base_lr, min_lr=1e-6):
-    def lr_lambda(current_epoch):
-        if current_epoch < num_warmup_epochs:
-            # 线性预热：从0逐渐升到base_lr
-            return float(current_epoch) / float(max(1, num_warmup_epochs))
+def get_scheduler(
+    optimizer,
+    num_warmup_epochs,
+    num_total_epochs,
+    base_lr,
+    min_lr=1e-6,
+    scheduler='cosine',
+    power=2.0):
+
+    if scheduler == 'cosine':
+        # 余弦退火 + 线性warmup
+        def lr_lambda(epoch):
+            if epoch < num_warmup_epochs:
+                return float(epoch) / float(max(1, num_warmup_epochs))
+            else:
+                progress = float(epoch - num_warmup_epochs) / float(max(1, num_total_epochs - num_warmup_epochs))
+                cosine_decay = 0.5 * (1 + torch.cos(torch.tensor(progress * 3.1415926535)))
+                decayed = (1 - min_lr / base_lr) * cosine_decay + min_lr / base_lr
+                return decayed.item()
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    elif scheduler == 'polynomial':
+        # 多项式衰减（无warmup）
+        def lr_lambda(epoch):
+            if epoch < num_warmup_epochs:
+                return float(epoch) / float(max(1, num_warmup_epochs))
+            else:
+                progress = float(epoch) / float(max(1, num_total_epochs))
+                poly_decay = (1 - progress) ** power
+                decayed = (1 - min_lr / base_lr) * poly_decay + min_lr / base_lr
+                return decayed
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    else:
+        raise ValueError(f"Unknown scheduler type: {scheduler}")
+    
+    
+    
+class EarlyStopping:
+    def __init__(self, patience=cfg.early_stop_patience, delta=0.0):
+        self.patience = patience
+        self.delta = delta
+        self.best_score = None
+        self.counter = 0
+        self.early_stop = False
+
+    def __call__(self, val_loss):
+        score = -val_loss
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
         else:
-            # 余弦退火，从base_lr降到min_lr
-            progress = float(current_epoch - num_warmup_epochs) / float(max(1, num_total_epochs - num_warmup_epochs))
-            cosine_decay = 0.5 * (1 + torch.cos(torch.tensor(progress * 3.1415926535)))
-            decayed = (1 - min_lr / base_lr) * cosine_decay + min_lr / base_lr
-            return decayed.item()
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+            self.best_score = score
+            self.counter = 0
 
 
 
@@ -207,7 +250,7 @@ def validate(val_loader, model, criterion, device, compute_hd, monitor=None):
     return avg_loss, avg_dice, avg_hd95
 
 
-def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold, compute_hd, scheduler=None):
+def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold, compute_hd, scheduler=None, early_stopping=None):
     train_losses = []
     val_losses = []
     val_dices = []
@@ -279,16 +322,22 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
             current_lrs = [param_group['lr'] for param_group in optimizer.param_groups]
             print(f"Epoch {epoch+1} learning rate(s): {current_lrs[0]}")
             lr_history.append(current_lrs[0]) 
+            
+        if early_stopping is not None:
+            early_stopping(val_loss)
+            if early_stopping.early_stop:
+                print(f"[Fold {fold}] Early stopping at epoch {epoch+1}")
+                break
 
     return train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history
 
 
 # 折训练函数
-def train_fold(train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold, compute_hd, scheduler):
+def train_fold(train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold, compute_hd, scheduler, early_stopping):
     print(f"\n[Fold {fold+1}] Training Started")
     
     train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history = train_one_fold(
-        train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold+1, compute_hd, scheduler
+        train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold+1, compute_hd, scheduler, early_stopping
     )
     
     print(f"[Fold {fold+1}] Training Completed")

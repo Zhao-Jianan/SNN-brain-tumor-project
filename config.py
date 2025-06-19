@@ -2,7 +2,7 @@ import torch
 
 class Config:
     def __init__(self):
-        self.gpu_name = 'cuda:1'
+        self.gpu_name = 'cuda:8'
         self.device = torch.device(self.gpu_name if torch.cuda.is_available() else "cpu")
         
         # BraTS2018
@@ -27,7 +27,7 @@ class Config:
         self.num_heads = [4, 6, 8, 12]  # 96-[4, 6, 8, 12]  64-[4, 4, 8, 8]
         self.num_classes = 3
         self.T = 4
-        self.num_epochs = 200
+        self.num_epochs = 300
         self.batch_size = 1
         self.k_folds = 5
         self.loss_function = 'dice' # dice, focal
@@ -39,8 +39,11 @@ class Config:
 
         self.compute_hd = False
 
+        self.scheduler = 'polynomial' # cosine, polynomial
+        self.num_warmup_epochs = -1  # -1表示不使用warmup
+        self.early_stop_patience = 50
+        
         self.base_lr = 1e-3
-        self.num_warmup_epochs = 10
         self.min_lr = 1e-6
 
         self.step_mode = 'm'
