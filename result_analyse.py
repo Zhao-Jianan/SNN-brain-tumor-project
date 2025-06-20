@@ -27,4 +27,4 @@ def find_best_val_mean_dice(json_path):
 
 
 
-find_best_val_mean_dice("./Result/13-brats-18-possion-nodropout-T4_tumor_aware_random_val_111/fold_5_metrics.json")
+find_best_val_mean_dice("./Result/24-brats-18-possion-nodropout-T4_tumor_aware_1e3_1e6_warmpoly_214/fold_5_metrics.json")

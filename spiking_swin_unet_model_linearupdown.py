@@ -39,16 +39,45 @@ class LayerNorm3D(base.MemoryModule):
 class SpikingPatchEmbed3D(base.MemoryModule):
     def __init__(self, in_channels, embed_dim, patch_size=(2, 2, 2), step_mode='m'):
         super().__init__()
-        self.proj = layer.Conv3d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size, step_mode=step_mode)
+        self.patch_size = patch_size
+        self.step_mode = step_mode
+        patch_volume = patch_size[0] * patch_size[1] * patch_size[2]
+        self.linear = layer.Linear(in_channels * patch_volume, embed_dim, step_mode=step_mode)
         self.norm = LayerNorm3D(embed_dim, step_mode=step_mode)
-        self.sn = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
+        self.sn = neuron.LIFNode(surrogate_function=neuron.surrogate.ATan(), step_mode=step_mode)
         functional.set_step_mode(self, step_mode=step_mode)
 
     def forward(self, x):
-        x = self.proj(x)
+        # x shape: [T, B, C, D, H, W]
+        ps = self.patch_size
+        T, B, C, D, H, W = x.shape
+        assert D % ps[0] == 0 and H % ps[1] == 0 and W % ps[2] == 0
+
+        new_D, new_H, new_W = D // ps[0], H // ps[1], W // ps[2]
+
+        # Step 1: reshape into patch grid
+        x = x.view(T, B, C,
+                   new_D, ps[0],
+                   new_H, ps[1],
+                   new_W, ps[2])  # [T, B, C, D', pd, H', ph, W', pw]
+
+        # Step 2: permute to move patch pixels and channels to the last dim
+        x = x.permute(0, 1, 3, 5, 7, 4, 6, 8, 2)  # [T, B, D', H', W', pd, ph, pw, C]
+
+        # Step 3: flatten patch
+        x = x.contiguous().view(T, B, new_D, new_H, new_W, ps[0] * ps[1] * ps[2] * C)
+
+        # Step 4: linear projection
+        x = self.linear(x)
+
+        # Step 5: reshape back to [T, B, C, D', H', W']
+        x = x.permute(0, 1, 5, 2, 3, 4).contiguous()
+        
+        # Step 6: norm, spike
         x = self.norm(x)
         x = self.sn(x)
-        return x
+
+        return x  # [T, B, embed_dim, D', H', W']
 
 
 
@@ -193,7 +222,7 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         # 脉冲激活
         out = self.proj(out)
         # out = self.dropout(out)
-        # out = out + x_windows
+        out = out + x_windows
         out = out.view(T, B, -1, self.embed_dim)
         out = self.sn(out)
         out = out.view(T * B, -1, self.embed_dim)
@@ -317,34 +346,87 @@ class SpikingSwinTransformerStage3D(base.MemoryModule):
 
 
 class SpikingPatchExpand3D(base.MemoryModule):
-    def __init__(self, in_channels, out_channels, kernel_size=(2,2,2), stride=2, dropout=0.1, step_mode='s'):
+    def __init__(self, in_channels, out_channels, kernel_size=(2, 2, 2), step_mode='s'):
         super().__init__()
-        self.conv_transpose = layer.ConvTranspose3d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, step_mode=step_mode)
+        assert kernel_size[0] == kernel_size[1] == kernel_size[2], "Only support equal upscaling factors in all dims"
+        self.usf = kernel_size[0]  # 使用 kernel_size 决定上采样倍率
+        self.out_channels = out_channels
+        self.hidden_dim = (self.usf ** 3) * out_channels
+
+        self.linear = layer.Linear(in_channels, self.hidden_dim, step_mode=step_mode)
         self.norm = LayerNorm3D(out_channels, step_mode=step_mode)
         self.sn = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
         functional.set_step_mode(self, step_mode)
 
     def forward(self, x):
-        x = self.conv_transpose(x)
+        # x: [T, B, C, D, H, W]
+        T, B, C, D, H, W = x.shape
+        usf = self.usf
+        out_c = self.out_channels
+
+        # [T, B, C, D, H, W] -> [T, B, D, H, W, C]
+        x = x.permute(0, 1, 3, 4, 5, 2).contiguous()
+
+        # Flatten: [T, B, D, H, W, C] -> [T * B * D * H * W, C]
+        x = x.view(T * B * D * H * W, C)
+
+        # Linear projection: -> [T * B * D * H * W, hidden_dim]
+        x = self.linear(x)
+
+        # Restore shape: [T, B, D, H, W, usf, usf, usf, out_c]
+        x = x.view(T, B, D, H, W, usf, usf, usf, out_c)
+
+        # Rearrange: -> [T, B, C, D', H', W']
+        x = x.permute(0, 1, 8, 2, 5, 3, 6, 4, 7).contiguous()
+        x = x.view(T, B, out_c, D * usf, H * usf, W * usf)
+
         x = self.norm(x)
         x = self.sn(x)
-        return x
+
+        return x  # [T, B, out_channels, D↑, H↑, W↑]
 
 
 class FinalSpikingPatchExpand3D(base.MemoryModule):
-    def __init__(self, in_channels, out_channels, kernel_size=(2,2,2), stride=2, dropout=0.1, step_mode='s'):
+    def __init__(self, in_channels, out_channels, kernel_size=(4, 4, 4), step_mode='s'):
         super().__init__()
-        self.conv_transpose = layer.ConvTranspose3d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, step_mode=step_mode)
+        assert kernel_size[0] == kernel_size[1] == kernel_size[2], "Only support equal upscaling factors"
+        self.usf = kernel_size[0]  # 上采样倍率
+        self.out_channels = out_channels
+        self.hidden_dim = (self.usf ** 3) * out_channels
+
+        self.linear = layer.Linear(in_channels, self.hidden_dim, step_mode=step_mode)
         self.norm = LayerNorm3D(out_channels, step_mode=step_mode)
         self.sn = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
 
         functional.set_step_mode(self, step_mode)
 
     def forward(self, x):
-        x = self.conv_transpose(x)
+        # x: [T, B, C, D, H, W]
+        T, B, C, D, H, W = x.shape
+        usf = self.usf
+        out_c = self.out_channels
+
+        # [T, B, C, D, H, W] → [T, B, D, H, W, C]
+        x = x.permute(0, 1, 3, 4, 5, 2).contiguous()
+
+        # Flatten: [T * B * D * H * W, C]
+        x = x.view(T * B * D * H * W, C)
+
+        # Linear projection
+        x = self.linear(x)  # [T * B * D * H * W, hidden_dim]
+
+        # Reshape: [T, B, D, H, W, usf, usf, usf, out_c]
+        x = x.view(T, B, D, H, W, usf, usf, usf, out_c)
+
+        # Rearrange to [T, B, out_c, D * usf, H * usf, W * usf]
+        x = x.permute(0, 1, 8, 2, 5, 3, 6, 4, 7).contiguous()
+        x = x.view(T, B, out_c, D * usf, H * usf, W * usf)
+
         x = self.norm(x)
         x = self.sn(x)
-        return x
+        return x  # [T, B, out_channels, D↑, H↑, W↑]
+
+
 
 
 class SpikingConcatReduce3D(base.MemoryModule):
@@ -404,23 +486,23 @@ class SpikingSwinUNet3D(base.MemoryModule):
         self.feature_stage = SpikingSwinTransformerStage3D(
             embed_dim * 8, num_heads[3], layers[3], window_size, dropout, step_mode=step_mode)
 
-        self.patch_expand3 = SpikingPatchExpand3D(embed_dim * 8, embed_dim * 4, dropout=dropout, step_mode=step_mode)
+        self.patch_expand3 = SpikingPatchExpand3D(embed_dim * 8, embed_dim * 4, kernel_size=(2,2,2), step_mode=step_mode)
         self.up_stage3 = SpikingSwinTransformerStage3D(
             embed_dim * 4, num_heads[2], layers[2], window_size, dropout, step_mode=step_mode)
         self.converge3 = SpikingAddConverge3D(embed_dim * 4, step_mode=step_mode)
         
-        self.patch_expand2 = SpikingPatchExpand3D(embed_dim * 4, embed_dim * 2, dropout=dropout, step_mode=step_mode)
+        self.patch_expand2 = SpikingPatchExpand3D(embed_dim * 4, embed_dim * 2, kernel_size=(2,2,2), step_mode=step_mode)
         self.up_stage2 = SpikingSwinTransformerStage3D(
             embed_dim * 2, num_heads[1], layers[1], window_size, dropout, step_mode=step_mode)
         self.converge2 = SpikingAddConverge3D(embed_dim * 2, step_mode=step_mode)
 
-        self.patch_expand1 = SpikingPatchExpand3D(embed_dim * 2, embed_dim, dropout=dropout, step_mode=step_mode)
+        self.patch_expand1 = SpikingPatchExpand3D(embed_dim * 2, embed_dim, kernel_size=(2,2,2), step_mode=step_mode)
         self.up_stage1 = SpikingSwinTransformerStage3D(
             embed_dim, num_heads[0], layers[0], window_size, dropout, step_mode=step_mode)
         self.converge1 = SpikingAddConverge3D(embed_dim, step_mode=step_mode)
 
 
-        self.final_expand = FinalSpikingPatchExpand3D(embed_dim, embed_dim // 3, kernel_size=4, stride=4, dropout=dropout, step_mode=step_mode)
+        self.final_expand = FinalSpikingPatchExpand3D(embed_dim, embed_dim // 3, kernel_size=(4, 4, 4), step_mode=step_mode)
 
         self.readout = layer.Conv3d(embed_dim // 3, num_classes, kernel_size=1, step_mode=step_mode)
         

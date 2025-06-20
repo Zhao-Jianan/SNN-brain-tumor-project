@@ -2,7 +2,7 @@ import torch
 
 class Config:
     def __init__(self):
-        self.gpu_name = 'cuda:8'
+        self.gpu_name = 'cuda:2'
         self.device = torch.device(self.gpu_name if torch.cuda.is_available() else "cpu")
         
         # BraTS2018
