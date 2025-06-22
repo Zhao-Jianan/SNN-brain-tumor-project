@@ -26,7 +26,7 @@ class Config:
         self.embed_dim = 96
         self.num_heads = [4, 6, 8, 12]  # 96-[4, 6, 8, 12]  64-[4, 4, 8, 8]
         self.num_classes = 3
-        self.T = 4
+        self.T = 8
         self.num_epochs = 300
         self.batch_size = 1
         self.k_folds = 5
@@ -40,6 +40,7 @@ class Config:
         self.compute_hd = False
 
         self.scheduler = 'polynomial' # cosine, polynomial
+        self.power = 3.0
         self.num_warmup_epochs = -1  # -1表示不使用warmup
         self.early_stop_patience = 50
         

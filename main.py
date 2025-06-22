@@ -3,7 +3,7 @@ os.chdir(os.path.dirname(__file__))
 import torch
 import torch.optim as optim
 from sklearn.model_selection import KFold
-from spiking_swin_unet_model_linearupdown import SpikingSwinUNet3D
+from spiking_swin_unet_model import SpikingSwinUNet3D
 from losses import BratsDiceLoss, BratsFocalLoss
 from utils import init_weights, save_metrics_to_file
 from train import train_fold, get_scheduler, EarlyStopping
@@ -49,7 +49,8 @@ def main():
             step_mode=cfg.step_mode).to(cfg.device)  # 模型
         model.apply(init_weights)
         optimizer = optim.AdamW(model.parameters(), lr=cfg.base_lr, eps=1e-8, weight_decay=1e-4)
-        scheduler = get_scheduler(optimizer, cfg.num_warmup_epochs, cfg.num_epochs, cfg.base_lr, cfg.min_lr, cfg.scheduler)
+        scheduler = get_scheduler(optimizer, cfg.num_warmup_epochs, cfg.num_epochs, 
+                                  cfg.base_lr, cfg.min_lr, cfg.scheduler, cfg.power)
         early_stopping = EarlyStopping(patience=cfg.early_stop_patience, delta=0.0001)
 
         # 根据交叉验证划分数据集

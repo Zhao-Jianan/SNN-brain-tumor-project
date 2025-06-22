@@ -26,5 +26,13 @@ def find_best_val_mean_dice(json_path):
     print(f"val_mean_dices: {val_mean_dices[best_idx]}")
 
 
+def main():
+    root_path = "./Result/"
+    experiment_name = "22-brats-18-possion-nodropout-T4_tumor_aware_1e3_1e6_214"
+    fold_num = "1"
+    file_path = f"{root_path}{experiment_name}/fold_{fold_num}_metrics.json"
 
-find_best_val_mean_dice("./Result/24-brats-18-possion-nodropout-T4_tumor_aware_1e3_1e6_warmpoly_214/fold_5_metrics.json")
+    find_best_val_mean_dice(file_path)
+    
+if __name__ == "__main__":
+    main()

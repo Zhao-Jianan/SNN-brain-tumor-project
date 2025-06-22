@@ -160,7 +160,7 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         out = out.permute(0, 2, 1, 3).contiguous().view(out.size(0), out.size(2), self.embed_dim)
         out = self.proj(out)
         # out = self.dropout(out)
-        # out = out + x_windows
+        out = out + x_windows
         out = self.sn(out)  # 脉冲激活
 
         x = self._window_reverse(out, B, D, H, W)
@@ -193,7 +193,7 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         # 脉冲激活
         out = self.proj(out)
         # out = self.dropout(out)
-        # out = out + x_windows
+        out = out + x_windows
         out = out.view(T, B, -1, self.embed_dim)
         out = self.sn(out)
         out = out.view(T * B, -1, self.embed_dim)
