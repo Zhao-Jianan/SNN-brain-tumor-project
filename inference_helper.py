@@ -69,17 +69,38 @@ class TemporalSlidingWindowInference:
             zz = zz - (self.patch_size[0] - 1) / 2
             yy = yy - (self.patch_size[1] - 1) / 2
             xx = xx - (self.patch_size[2] - 1) / 2
-            sigma = self.patch_size[0] / 8
-            gaussian = torch.exp(-(xx**2 + yy**2 + zz**2) / (2 * sigma**2))
+            sigmas = [s / 8 for s in self.patch_size]  # 分别计算 σ_D, σ_H, σ_W
+            gaussian = torch.exp(
+                -(zz ** 2 / (2 * sigmas[0] ** 2) +
+                yy ** 2 / (2 * sigmas[1] ** 2) +
+                xx ** 2 / (2 * sigmas[2] ** 2))
+            )
             return gaussian
-        else:
+        elif self.mode == "constant":
             return torch.ones(self.patch_size, device=device)
+        else:
+            raise ValueError(f"Unsupported mode: {self.mode}")
 
     def __call__(self, inputs: torch.Tensor, predictor: callable) -> torch.Tensor:
         T, B, C, D, H, W = inputs.shape
         device = inputs.device
         pd, ph, pw = self.patch_size
         stride = [int(r * (1 - self.overlap)) for r in self.patch_size]
+
+        # ---------------------------
+        # Step 0: Global rescale before sliding window
+        # ---------------------------
+        def global_rescale_0_1(img: torch.Tensor) -> torch.Tensor:
+            # img: [B, C, D, H, W]
+            min_val = img.amin(dim=[2, 3, 4], keepdim=True)
+            max_val = img.amax(dim=[2, 3, 4], keepdim=True)
+            scale = (max_val - min_val).clamp(min=1e-5)
+            return (img - min_val) / scale
+
+        # 使用第0帧的图像进行归一化（不影响时间维度）
+        inputs_rescaled = inputs.clone()
+        inputs_rescaled[0] = global_rescale_0_1(inputs[0])
+
         # ---------------------------
         # Step 1: Padding if needed
         # ---------------------------
@@ -92,24 +113,23 @@ class TemporalSlidingWindowInference:
             pad_d // 2, pad_d - pad_d // 2   # D
         ]
 
-        inputs = inputs.view(-1, D, H, W)
-        inputs = F.pad(inputs, pad=pad, mode="constant", value=0.0)
-        inputs = inputs.view(T, B, C, D + pad_d, H + pad_h, W + pad_w)
+        inputs_rescaled = inputs_rescaled.view(-1, D, H, W)
+        inputs_rescaled = F.pad(inputs_rescaled, pad=pad, mode="constant", value=0.0)
+        inputs_rescaled = inputs_rescaled.view(T, B, C, D + pad_d, H + pad_h, W + pad_w)
 
-        D_pad, H_pad, W_pad = inputs.shape[-3:]
+        D_pad, H_pad, W_pad = inputs_rescaled.shape[-3:]
         padded = any([pad_d, pad_h, pad_w])
         pad_info = (pad_d, pad_h, pad_w, D, H, W)
-        
-        
+
         # ---------------------------
         # Step 2: Prepare output tensors
         # ---------------------------
         weight_window = self._get_weight_window(device)
         output = torch.zeros((B, self.num_classes, D_pad, H_pad, W_pad), device=device)
         weight_map = torch.zeros((1, 1, D_pad, H_pad, W_pad), device=device)
-        
+
         # ---------------------------
-        # Step 3: Sliding window with tail completion
+        # Step 3: Sliding window
         # ---------------------------
         def get_starts(dim, patch_size, stride):
             starts = list(range(0, dim - patch_size + 1, stride))
@@ -120,19 +140,19 @@ class TemporalSlidingWindowInference:
         z_starts = get_starts(D_pad, pd, stride[0])
         y_starts = get_starts(H_pad, ph, stride[1])
         x_starts = get_starts(W_pad, pw, stride[2])
-        
 
         for z in z_starts:
             for y in y_starts:
                 for x in x_starts:
-                    patch = inputs[..., z:z+pd, y:y+ph, x:x+pw]  # [T, B, C, pd, ph, pw]
+                    patch = inputs_rescaled[..., z:z+pd, y:y+ph, x:x+pw]  # [T, B, C, pd, ph, pw]
                     for b_start in range(0, B, self.sw_batch_size):
                         b_end = min(b_start + self.sw_batch_size, B)
                         patch_b = patch[:, b_start:b_end]  # [T, b, C, pd, ph, pw]
 
-                        # Step 3.1: Prepare intensity input
+                        # Step 3.1: Encode directly using already rescaled intensity
                         patch_img = patch_b[0]  # [b, C, pd, ph, pw]
-                        patch_img = self._rescale_0_1(patch_img)
+                        # 不再进行 patch 内 rescale
+                        # patch_img = self._rescale_0_1(patch_img)
                         patch_encoded = self.encode_spike_input(patch_img)  # [T, b, C, pd, ph, pw]
 
                         # Step 3.2: Model inference

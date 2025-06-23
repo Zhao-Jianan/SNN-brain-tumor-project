@@ -78,7 +78,7 @@ def plot_modalities_with_masks(t1, t1ce, t2, flair, gt_mask, pred_mask, slice_id
 
 def main():
     # 设置数据目录和文件路径
-    data_dir = './data/HGG/Brats18_2013_27_1'  # e.g., BraTS_XXXX/
+    data_dir = './data/HGG/Brats18_2013_2_1'  # e.g., BraTS_XXXX/
     case_name = os.path.basename(data_dir)
 
     t1_path = os.path.join(data_dir, case_name + '_t1.nii')
@@ -96,12 +96,13 @@ def main():
     gt_mask = load_nifti_image(gt_mask_path).astype(np.uint8)
     pred_mask = load_nifti_image(pred_mask_path).astype(np.uint8)
     save_dir = './inference/'
-    save_path = os.path.join(save_dir, case_name + '_output4.png')
+    save_path = os.path.join(save_dir, case_name + '_output1.png')
 
     # 可视化中间层 (中间 slice 通常是肿瘤区域)
     best_slice = select_best_slice(gt_mask)
     plot_modalities_with_masks(t1, t1ce, t2, flair, gt_mask, pred_mask, slice_idx=best_slice, save_path=save_path)
+    print(f"Visualization completed and saved to {save_path}")
     
 if __name__ == '__main__':
     main()
-    print("Visualization completed and saved to output.png")
+    

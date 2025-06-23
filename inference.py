@@ -12,8 +12,9 @@ from monai.transforms import (
     )
 from copy import deepcopy
 import time
-from scipy.ndimage import binary_dilation, binary_opening, generate_binary_structure
+from scipy.ndimage import binary_dilation, binary_opening, label, generate_binary_structure
 from inference_helper import TemporalSlidingWindowInference
+from tqdm import tqdm
 
 
 def preprocess_for_inference(image_paths, T=8):
@@ -103,54 +104,70 @@ def convert_prediction_to_label(pred: torch.Tensor) -> torch.Tensor:
 
 def postprocess_brats_label(pred_mask: np.ndarray) -> np.ndarray:
     """
-    对BraTS预测标签做形态学后处理:
-    - ET (4) 膨胀1个像素
-    - NCR/NET (1) 保持原状或开运算平滑
-    - ED (2) 保持原状
-    输入：
-        pred_mask: (H, W, D) ndarray, uint8，标签值为0,1,2,4
-    返回：
-        后处理后的标签mask，shape相同
+    BraTS预测标签后处理：
+    - ET (4): 向外扩张一圈，只吸收外部的NCR和ED，不吞噬ET内部的NCR
+    - NCR/NET (1): 外部NCR做开运算，ET内部NCR保持原样
+    - ED (2): 保持原状
     """
-    structure = generate_binary_structure(rank=3, connectivity=1)  # 3D结构元素，邻接6个方向
 
-    # 分离各标签mask
+    structure = generate_binary_structure(3, 1)
+
+    # 原始标签
     et_mask = (pred_mask == 4)
     ncr_mask = (pred_mask == 1)
     edema_mask = (pred_mask == 2)
+
     print("Before Postprocessing:")
     print("Sum ET:", np.sum(et_mask))
     print("Sum ED:", np.sum(edema_mask))
     print("Sum NCR:", np.sum(ncr_mask))
 
-    # ET膨胀1个像素
-    et_dilated = binary_dilation(et_mask, structure=structure, iterations=1)
-    et_dilated &= (edema_mask | et_mask) 
+    # Step 1: 分离ET内部的NCR（要保护的）与ET外部的NCR（可处理的）
+    ncr_inside_et = ncr_mask & et_mask
+    ncr_outside_et = ncr_mask & (~et_mask)
 
-    # NCR保持原状，或者用开运算平滑（可选）
-    # ncr_processed = binary_opening(ncr_mask, structure=structure, iterations=1)
-    ncr_processed = ncr_mask  # 保持原状
+    # Step 2: 对外部NCR做开运算
+    ncr_outside_processed = binary_opening(ncr_outside_et, structure=structure, iterations=1)
+    ncr_processed = ncr_outside_processed | ncr_inside_et
 
-    # 初始化新的mask
+    # 被剥掉的外部NCR边缘
+    ncr_removed = ncr_outside_et & (~ncr_outside_processed)
+
+    # Step 3: 构造ET的“外壳”：从ET外面包一圈，不含ET原始区域
+    et_outer_shell = binary_dilation(et_mask, structure=structure, iterations=1) & (~et_mask)
+
+    # Step 4: 只允许ET扩张到其“外壳”中满足条件的区域（NCR外部边缘 or ED）
+    et_expand_target = et_outer_shell & (ncr_removed | edema_mask)
+
+    # Step 5: 最终ET = 原始ET + 允许扩张区域（外壳目标）
+    et_final = et_mask | et_expand_target
+
+    # Step 6: 构建最终mask
     new_mask = np.zeros_like(pred_mask, dtype=np.uint8)
-
-    # 按优先级分配：ET > ED > NCR
-    new_mask[et_dilated] = 4
+    new_mask[et_final] = 4
     new_mask[(edema_mask) & (new_mask == 0)] = 2
     new_mask[(ncr_processed) & (new_mask == 0)] = 1
 
-    # 背景默认是0，不用赋值
+    # Step 7: 剩余被删掉的NCR边缘如果未被覆盖，强制转ET（避免留背景）
+    ncr_remaining = ncr_removed & (new_mask == 0)
+    new_mask[ncr_remaining] = 4
+
     print("Postprocessing results:")
     print("Sum ET:", np.sum(new_mask == 4))
     print("Sum ED:", np.sum(new_mask == 2))
     print("Sum NCR:", np.sum(new_mask == 1))
+
     return new_mask
 
 
-def inference_single_case(case_dir, model, inference_engine, device, T=8):
+
+
+
+def pred_single_case(case_dir, inference_dir, model, inference_engine, device, T=8):
     # 用cfg.modalities拼4模态路径
     case_name = os.path.basename(case_dir)
-    image_paths = [os.path.join(case_dir, f"{case_name}_{mod}.nii") for mod in cfg.modalities]
+    # image_paths = [os.path.join(case_dir, f"{case_name}_{mod}.nii") for mod in cfg.modalities]
+    image_paths = [os.path.join(case_dir, f"{mod}.nii.gz") for mod in cfg.modalities]
 
     # 预处理，返回 (T, C, D, H, W) Tensor
     x_seq = preprocess_for_inference(image_paths, T=T)
@@ -176,37 +193,64 @@ def inference_single_case(case_dir, model, inference_engine, device, T=8):
     label_np = label_raw.cpu().numpy().astype(np.uint8)
     label_np = np.transpose(label_np, (1, 2, 0))
     print("Label shape before postprocessing:", label_np.shape)  # (H, W, D)
-    # label_np = postprocess_brats_label(label_np)
+    label_np = postprocess_brats_label(label_np)
     print("Saved label shape:", label_np.shape)  # (H, W, D)
 
     # 以t1ce为参考保存nii
     ref_nii = nib.load(image_paths[cfg.modalities.index('t1ce')])
     pred_nii = nib.Nifti1Image(label_np, affine=ref_nii.affine, header=ref_nii.header)
 
-    out_path = os.path.join(case_dir, f"{case_name}_pred_mask.nii")
+    out_path = os.path.join(inference_dir, f"{case_name}_pred_mask.nii.gz")
     nib.save(pred_nii, out_path)
     print(f"Saved prediction: {out_path}")
+
+
+
+def run_inference_on_case(case_dir: str, save_dir: str, model, inference_engine, device, T: int):
+    os.makedirs(save_dir, exist_ok=True)
+    pred_single_case(case_dir, save_dir, model, inference_engine, device, T=T)
+
+
+def run_inference_on_folder(case_root: str, save_dir: str, model, inference_engine, device, T: int):
+    """
+    推理多个 case 文件夹
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    case_dirs = sorted([
+        os.path.join(case_root, name) for name in os.listdir(case_root)
+        if os.path.isdir(os.path.join(case_root, name))
+    ])
+    print(f"Found {len(case_dirs)} cases to infer.")
+    
+    for case_dir in tqdm(case_dirs, desc="Batch Inference"):
+        run_inference_on_case(case_dir, save_dir, model, inference_engine, device, T)
+
 
     
 
 def main():
-    case_dir = "./data/HGG/Brats18_2013_27_1"
-    model_ckpt = "./checkpoint/tumor_center_crop_best_model_fold1.pth"
-
+    case_dir = "./data/HGG/"
+    model_ckpt = "./checkpoint/best_model_fold_inference.pth"
+    inference_dir = "./inference"
+    
     model = SpikingSwinUNet3D(window_size=cfg.window_size, T=cfg.T, step_mode=cfg.step_mode).to(cfg.device)  # 模型.to(cfg.device)
     model.load_state_dict(torch.load(model_ckpt, map_location=cfg.device))
     model.eval()
 
     inference_engine = TemporalSlidingWindowInference(
         patch_size=cfg.patch_size,
-        overlap=0.5, # cfg.overlap
+        overlap=cfg.overlap, # cfg.overlap
         sw_batch_size=1,
+        mode="constant", # "gaussian", "constant"
         encode_method=cfg.encode_method,
-        T= 10, # cfg.T
+        T= cfg.T, # cfg.T
         num_classes=cfg.num_classes
     )
     
-    inference_single_case(case_dir, model, inference_engine, cfg.device, T=cfg.T)
+    if os.path.isdir(case_dir) and any(os.path.isdir(os.path.join(case_dir, f)) for f in os.listdir(case_dir)):
+        run_inference_on_folder(case_dir, inference_dir, model, inference_engine, cfg.device, cfg.T)
+    else:
+        run_inference_on_case(case_dir, inference_dir, model, inference_engine, cfg.device, cfg.T)
 
     
 

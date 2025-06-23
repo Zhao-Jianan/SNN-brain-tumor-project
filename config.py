@@ -2,11 +2,12 @@ import torch
 
 class Config:
     def __init__(self):
-        self.gpu_name = 'cuda:2'
+        self.gpu_name = 'cuda:1'
         self.device = torch.device(self.gpu_name if torch.cuda.is_available() else "cpu")
+        self.seed = 42
         
         # BraTS2018
-        self.root_dir = './data/HGG/'        
+        self.root_dirs = ['./data/HGG', './data/LGG']        
         self.modalities = ['t1', 't1ce', 't2', 'flair']
         self.modality_separator = "_"
         self.image_suffix = ".nii"
@@ -26,8 +27,8 @@ class Config:
         self.embed_dim = 96
         self.num_heads = [4, 6, 8, 12]  # 96-[4, 6, 8, 12]  64-[4, 4, 8, 8]
         self.num_classes = 3
-        self.T = 8
-        self.num_epochs = 300
+        self.T = 4
+        self.num_epochs = 500
         self.batch_size = 1
         self.k_folds = 5
         self.loss_function = 'dice' # dice, focal
@@ -40,7 +41,7 @@ class Config:
         self.compute_hd = False
 
         self.scheduler = 'polynomial' # cosine, polynomial
-        self.power = 3.0
+        self.power = 3.0 # 300-2.0, 500-3.0
         self.num_warmup_epochs = -1  # -1表示不使用warmup
         self.early_stop_patience = 50
         

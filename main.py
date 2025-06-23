@@ -10,14 +10,29 @@ from train import train_fold, get_scheduler, EarlyStopping
 from plot import plot_metrics
 from data_loader import get_data_loaders
 from config import config as cfg
-
+from glob import glob
+import random
+import numpy as np
+from monai.utils import set_determinism
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy("file_system")
 
 
+def setseed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    set_determinism(seed)
+
 # 主执行流程：5折交叉验证
 def main():
-    case_dirs = [os.path.join(cfg.root_dir, d) for d in os.listdir(cfg.root_dir) if os.path.isdir(os.path.join(cfg.root_dir, d))]
+    # 设置随机种子
+    setseed(cfg.seed)
+    
+    case_dirs = []
+    for root in cfg.root_dirs:  # cfg.root_dirs = ['./data/HGG', './data/LGG']
+        case_dirs += sorted(glob(os.path.join(root, '*')))
     # 打印配置名
     print(cfg.device)
 
@@ -38,7 +53,7 @@ def main():
         )
     else:
         raise ValueError(f"Unsupported loss function: {cfg.loss_function}")
-    kf = KFold(n_splits=cfg.k_folds, shuffle=True)
+    kf = KFold(n_splits=cfg.k_folds, shuffle=True, random_state=cfg.seed)
 
     # 开始交叉验证
     for fold, (train_idx, val_idx) in enumerate(kf.split(case_dirs)):

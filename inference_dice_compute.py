@@ -60,11 +60,11 @@ def compute_dice_from_nifti(pred_path, gt_path):
 
 
 def main():
-    data_dir = './data/HGG/Brats18_2013_27_1'  # e.g., BraTS_XXXX/
+    data_dir = 'Z:/Datasets/archive/MICCAI_BraTS_2018_Data_Validation/Brats18_CBICA_AAM_1'  # e.g., BraTS_XXXX/
     case_name = os.path.basename(data_dir)
 
-    gt_mask_path = os.path.join(data_dir, case_name + '_seg.nii')     # ground truth
-    pred_mask_path = os.path.join(data_dir, case_name + '_pred_mask.nii') # model prediction
+    gt_mask_path = os.path.join(data_dir, case_name + '.nii.gz')     # ground truth
+    pred_mask_path = os.path.join(data_dir, case_name + '_pred_mask.nii.gz') # model prediction _pred_mask_constant_05.nii
     
 
     dice_results = compute_dice_from_nifti(pred_mask_path, gt_mask_path)
