@@ -2,9 +2,9 @@ import torch
 
 class Config:
     def __init__(self):
-        self.gpu_name = 'cuda:1'
+        self.gpu_name = 'cuda:7'
         self.device = torch.device(self.gpu_name if torch.cuda.is_available() else "cpu")
-        self.seed = 42
+        self.seed =  3407 # 42, 3407
         
         # BraTS2018
         self.root_dirs = ['./data/HGG', './data/LGG']        
@@ -28,11 +28,11 @@ class Config:
         self.num_heads = [4, 6, 8, 12]  # 96-[4, 6, 8, 12]  64-[4, 4, 8, 8]
         self.num_classes = 3
         self.T = 4
-        self.num_epochs = 500
+        self.num_epochs = 600
         self.batch_size = 1
         self.k_folds = 5
         self.loss_function = 'dice' # dice, focal
-        self.loss_weights = [2.0, 1.0, 4.0]
+        self.loss_weights = [1.0, 2.0, 4.0]
         self.train_crop_mode = "tumor_aware_random"  # tumor_aware_random, warmup_weighted_random, random, tumor_center
         self.val_crop_mode = 'tumor_aware_random' # tumor_aware_random, sliding_window, random, tumor_center
         self.overlap = 0.5
@@ -41,9 +41,9 @@ class Config:
         self.compute_hd = False
 
         self.scheduler = 'polynomial' # cosine, polynomial
-        self.power = 3.0 # 300-2.0, 500-3.0
-        self.num_warmup_epochs = -1  # -1表示不使用warmup
-        self.early_stop_patience = 50
+        self.power = 1.2 # 300-2.0, 500-3.0
+        self.num_warmup_epochs = 20  # -1表示不使用warmup
+        self.early_stop_patience = 80
         
         self.base_lr = 1e-3
         self.min_lr = 1e-6
