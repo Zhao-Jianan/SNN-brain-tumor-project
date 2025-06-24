@@ -59,16 +59,67 @@ def compute_dice_from_nifti(pred_path, gt_path):
     }
 
 
+
+def batch_compute_dice(gt_dir, pred_dir):
+    all_dice_scores = []
+
+    for pred_file in os.listdir(pred_dir):
+        if not pred_file.endswith('_pred_mask.nii.gz'):
+            continue
+
+        # 获取病例名
+        case_name = pred_file.replace('_pred_mask.nii.gz', '')
+
+        # 构造文件路径
+        pred_path = os.path.join(pred_dir, pred_file)
+        gt_path = os.path.join(gt_dir, case_name + '.nii.gz')
+
+        if not os.path.exists(gt_path):
+            print(f"[Warning] Ground truth not found for {case_name}, skipping.")
+            continue
+
+        # 计算 Dice
+        dice = compute_dice_from_nifti(pred_path, gt_path)
+        all_dice_scores.append(dice)
+
+        print(f"{case_name}: {dice}")
+
+    # 计算平均值
+    dice_tc = [d["Dice_TC"] for d in all_dice_scores]
+    dice_wt = [d["Dice_WT"] for d in all_dice_scores]
+    dice_et = [d["Dice_ET"] for d in all_dice_scores]
+    mean_dice = [d["Mean_Dice"] for d in all_dice_scores]
+
+    print("\n=== Average Dice Scores ===")
+    print(f"Dice_TC Mean: {np.mean(dice_tc):.4f}")
+    print(f"Dice_WT Mean: {np.mean(dice_wt):.4f}")
+    print(f"Dice_ET Mean: {np.mean(dice_et):.4f}")
+    print(f"Mean_Dice:   {np.mean(mean_dice):.4f}")
+
+
+
+
+
+
 def main():
-    data_dir = 'Z:/Datasets/archive/MICCAI_BraTS_2018_Data_Validation/Brats18_CBICA_AAM_1'  # e.g., BraTS_XXXX/
-    case_name = os.path.basename(data_dir)
-
-    gt_mask_path = os.path.join(data_dir, case_name + '.nii.gz')     # ground truth
-    pred_mask_path = os.path.join(data_dir, case_name + '_pred_mask.nii.gz') # model prediction _pred_mask_constant_05.nii
+    batch_compute = True
     
+    if batch_compute:
+        # 批量计算 Dice
+        gt_dir = './val_pred/nnUNetTrainer'
+        pred_dir = './val_pred/test_pred'
+        batch_compute_dice(gt_dir, pred_dir)
+    else:
+        # compute single case Dice
+        data_dir = 'Z:/Datasets/archive/MICCAI_BraTS_2018_Data_Validation/Brats18_CBICA_AAM_1'  # e.g., BraTS_XXXX/
+        case_name = os.path.basename(data_dir)
 
-    dice_results = compute_dice_from_nifti(pred_mask_path, gt_mask_path)
-    print(dice_results)
+        gt_mask_path = os.path.join(data_dir, case_name + '.nii.gz')     # ground truth
+        pred_mask_path = os.path.join(data_dir, case_name + '_pred_mask.nii.gz') # model prediction _pred_mask_constant_05.nii
+        
+
+        dice_results = compute_dice_from_nifti(pred_mask_path, gt_mask_path)
+        print(dice_results)
 
 if __name__ == "__main__":
     main()
