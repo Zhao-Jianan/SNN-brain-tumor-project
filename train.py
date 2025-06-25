@@ -99,14 +99,19 @@ def get_scheduler(
     
     
 class EarlyStopping:
-    def __init__(self, patience=cfg.early_stop_patience, delta=0.0):
+    def __init__(self, patience=cfg.early_stop_patience, delta=0.0, start_epoch=200):
         self.patience = patience
         self.delta = delta
+        self.start_epoch = start_epoch
         self.best_score = None
         self.counter = 0
         self.early_stop = False
 
-    def __call__(self, val_loss):
+    def __call__(self, val_loss, current_epoch):
+        if current_epoch < self.start_epoch:
+            # 还没达到起始 epoch，跳过早停判断
+            return
+
         score = -val_loss
         if self.best_score is None:
             self.best_score = score
@@ -127,7 +132,7 @@ monitor_val = None
 
 
 # 训练和验证函数
-def train(train_loader, model, optimizer, criterion, device, monitor=None):
+def train(train_loader, model, optimizer, criterion, device, monitor=None, debug=False, compute_time=False):
     model.train()
     if monitor:
         monitor.register_hooks(model)
@@ -136,35 +141,75 @@ def train(train_loader, model, optimizer, criterion, device, monitor=None):
     running_loss = 0.0
     print('Train -------------->>>>>>>')
     for x_seq, y in train_loader:
-        # 数据检查：检查输入 x_seq 和标签 y 是否包含 NaN 或 Inf
-        if torch.isnan(x_seq).any() or torch.isinf(x_seq).any():
-            print(f"[FATAL] x_seq contains NaN/Inf at batch, stopping.")
-            break
-        if torch.isnan(y).any() or torch.isinf(y).any():
-            print(f"[FATAL] y contains NaN/Inf at batch, stopping.")
-            break
+        if compute_time:
+            start_time = time.time()
+        if debug:
+            # 数据检查：检查输入 x_seq 和标签 y 是否包含 NaN 或 Inf
+            if torch.isnan(x_seq).any() or torch.isinf(x_seq).any():
+                print(f"[FATAL] x_seq contains NaN/Inf at batch, stopping.")
+                break
+            if torch.isnan(y).any() or torch.isinf(y).any():
+                print(f"[FATAL] y contains NaN/Inf at batch, stopping.")
+                break
+        
 
-        x_seq = x_seq.permute(1, 0, 2, 3, 4, 5).to(device)  # [B, T, 1, D, H, W] → [T, B, 1, D, H, W]
+        x_seq = x_seq.permute(1, 0, 2, 3, 4, 5).contiguous().to(device)  # [B, T, 1, D, H, W] → [T, B, 1, D, H, W]
+        if compute_time:
+            time1 = time.time()
+            print(f"[DEBUG] Permute time: {time1 - start_time:.4f} seconds")
         y = y.to(device)
         optimizer.zero_grad()
         output = model(x_seq)
+        
+        if compute_time:
+            time2 = time.time()
+            print(f"[DEBUG] Model forward time: {time2 - time1:.4f} seconds")
 
-        # 检查模型输出是否为 NaN 或 Inf
-        if torch.isnan(output).any() or torch.isinf(output).any():
-            print(f"[FATAL] model output NaN/Inf at batch, stopping.")
-            print(f"Output: {output}")  # 输出模型输出，检查其值
-            break
-
+        if debug:
+            # 检查模型输出是否为 NaN 或 Inf
+            if torch.isnan(output).any() or torch.isinf(output).any():
+                print(f"[FATAL] model output NaN/Inf at batch, stopping.")
+                print(f"Output: {output}")  # 输出模型输出，检查其值
+                break
+        
+        if compute_time:    
+            time3 = time.time()
+            print(f"[DEBUG] Model output time: {time3 - time2:.4f} seconds") 
+            print(f"pred device: {output.device}, target device: {y.device}, weights device: {criterion.weights.device}") 
+                     
         loss = criterion(output, y)
-
-        # 检查 loss 是否为 NaN
-        if torch.isnan(loss):
-            print(f"[FATAL] loss NaN at batch, stopping at epoch") 
-            break
+        
+        if compute_time:
+            time4 = time.time()
+            print(f"[DEBUG] Loss computation time: {time4 - time3:.4f} seconds")
+        
+        if debug:
+            # 检查 loss 是否为 NaN
+            if torch.isnan(loss):
+                print(f"[FATAL] loss NaN at batch, stopping at epoch") 
+                break
+        
+        if compute_time:
+            time5 = time.time()
 
         loss.backward()
+        
+        if compute_time:
+            time6 = time.time()
+            print(f"[DEBUG] Backward time: {time6 - time5:.4f} seconds")
+            
         optimizer.step()
+        
+        if compute_time:
+            time7 = time.time()
+            print(f"[DEBUG] Optimizer step time: {time7 - time6:.4f} seconds")
+            
         running_loss += loss.item()
+        
+        if compute_time:
+            end_time = time.time()
+            print(f"[DEBUG] add loss time: {end_time - time7:.4f} seconds")
+            print(f"[DEBUG] Batch time: {end_time - start_time:.4f} seconds")
     
     if monitor:
         monitor.print_summary()
@@ -188,7 +233,7 @@ if cfg.val_crop_mode == 'sliding_window':
     )
 
 
-def validate(val_loader, model, criterion, device, compute_hd, monitor=None):
+def validate(val_loader, model, criterion, device, compute_hd, monitor=None, debug=False):
     model.eval()
     if monitor:
         monitor.register_hooks(model)
@@ -200,15 +245,16 @@ def validate(val_loader, model, criterion, device, compute_hd, monitor=None):
     print('Valid -------------->>>>>>>')
     with torch.no_grad():
         for i, (x_seq, y) in enumerate(val_loader):
-             # 数据检查：检查输入 x_seq 和标签 y 是否包含 NaN 或 Inf
-            if torch.isnan(x_seq).any() or torch.isinf(x_seq).any():
-                print(f"[FATAL] x_seq contains NaN/Inf at batch, stopping.")
-                break
-            if torch.isnan(y).any() or torch.isinf(y).any():
-                print(f"[FATAL] y contains NaN/Inf at batch, stopping.")
-                break
+            if debug:
+                # 数据检查：检查输入 x_seq 和标签 y 是否包含 NaN 或 Inf
+                if torch.isnan(x_seq).any() or torch.isinf(x_seq).any():
+                    print(f"[FATAL] x_seq contains NaN/Inf at batch, stopping.")
+                    break
+                if torch.isnan(y).any() or torch.isinf(y).any():
+                    print(f"[FATAL] y contains NaN/Inf at batch, stopping.")
+                    break
             
-            x_seq = x_seq.permute(1, 0, 2, 3, 4, 5).to(device)  # [T, B, 1, D, H, W]
+            x_seq = x_seq.permute(1, 0, 2, 3, 4, 5).contiguous().to(device)  # [T, B, 1, D, H, W]
             y_onehot = y.float().to(device)
             if val_inferencer:
                 output = val_inferencer(x_seq, model)
@@ -216,12 +262,13 @@ def validate(val_loader, model, criterion, device, compute_hd, monitor=None):
                 output = model(x_seq)  # [B, C, D, H, W]，未过 softmax
 
             loss = criterion(output, y_onehot)
-
-            # 检查 output 是否为 NaN 或 Inf
-            if torch.isnan(output).any() or torch.isinf(output).any():
-                print(f"[FATAL] model output NaN/Inf at batch, stopping.")
-                print(f"Output: {output}")
-                break
+            
+            if debug:
+                # 检查 output 是否为 NaN 或 Inf
+                if torch.isnan(output).any() or torch.isinf(output).any():
+                    print(f"[FATAL] model output NaN/Inf at batch, stopping.")
+                    print(f"Output: {output}")
+                    break
 
             dice = dice_score_braTS(output, y_onehot)  # dict: {'TC':..., 'WT':..., 'ET':...}
             # 累加各类别的dice值
@@ -324,7 +371,7 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
             lr_history.append(current_lrs[0]) 
             
         if early_stopping is not None:
-            early_stopping(val_loss)
+            early_stopping(val_loss, epoch+1)
             if early_stopping.early_stop:
                 print(f"[Fold {fold}] Early stopping at epoch {epoch+1}")
                 break

@@ -11,6 +11,7 @@ from plot import plot_metrics
 from data_loader import get_data_loaders
 from config import config as cfg
 from glob import glob
+import time
 import random
 import numpy as np
 from monai.utils import set_determinism
@@ -23,16 +24,19 @@ def setseed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    set_determinism(seed)
+    # set_determinism(seed)
 
 # 主执行流程：5折交叉验证
 def main():
     # 设置随机种子
     setseed(cfg.seed)
     
+    # case_dirs = [os.path.join(cfg.root_dir, d) for d in os.listdir(cfg.root_dir) if os.path.isdir(os.path.join(cfg.root_dir, d))]
     case_dirs = []
     for root in cfg.root_dirs:  # cfg.root_dirs = ['./data/HGG', './data/LGG']
         case_dirs += sorted(glob(os.path.join(root, '*')))
+    
+    
     # 打印配置名
     print(cfg.device)
 
@@ -42,7 +46,7 @@ def main():
             alpha=0.25,
             gamma=2.0,
             reduction='mean'
-        )
+        ).to(cfg.device)
     elif cfg.loss_function == 'dice':
         criterion = BratsDiceLoss(
             smooth_nr=0,
@@ -50,11 +54,11 @@ def main():
             squared_pred=True,
             sigmoid=True,
             weights=cfg.loss_weights
-        )
+        ).to(cfg.device)
     else:
         raise ValueError(f"Unsupported loss function: {cfg.loss_function}")
     kf = KFold(n_splits=cfg.k_folds, shuffle=True, random_state=cfg.seed)
-
+    print("weights device:", criterion.weights.device)
     # 开始交叉验证
     for fold, (train_idx, val_idx) in enumerate(kf.split(case_dirs)):
         model = SpikingSwinUNet3D(
@@ -77,9 +81,11 @@ def main():
             train_case_dirs, val_case_dirs, cfg.patch_size, cfg.batch_size, cfg.T, cfg.encode_method, cfg.num_workers
             )
 
+
         # 调用训练函数
         train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history = train_fold(
-            train_loader, val_loader, model, optimizer, criterion, cfg.device, cfg.num_epochs, fold, cfg.compute_hd, scheduler, early_stopping
+            train_loader, val_loader, model, optimizer, criterion, cfg.device, cfg.num_epochs, \
+                fold, cfg.compute_hd, scheduler, early_stopping
         )
         
         # 保存指标

@@ -24,7 +24,7 @@ class DiceCrossEntropyLoss(nn.Module):
 
         # Convert target to one-hot format: shape [B, C, D, H, W]
         num_classes = pred.shape[1]
-        target_onehot = F.one_hot(target, num_classes).permute(0, 4, 1, 2, 3).float()
+        target_onehot = F.one_hot(target, num_classes).permute(0, 4, 1, 2, 3).contiguous().float()
 
         # Apply softmax to logits to get probabilities
         pred_soft = F.softmax(pred, dim=1)
@@ -60,7 +60,7 @@ class DiceLoss(nn.Module):
         num_classes = pred.shape[1]
         
         # Convert target to one-hot format: shape [B, C, D, H, W]
-        target_onehot = F.one_hot(target, num_classes).permute(0, 4, 1, 2, 3).float()
+        target_onehot = F.one_hot(target, num_classes).permute(0, 4, 1, 2, 3).contiguous().float()
 
         # Apply softmax to logits to get probabilities
         pred_soft = F.softmax(pred, dim=1)
@@ -103,11 +103,12 @@ class BratsDiceLoss(nn.Module):
         self.batch = batch
 
         if weights is None:
-            self.weights = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32)
+            weights = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32)
         else:
             weights = torch.tensor(weights, dtype=torch.float32)
             weights = weights / weights.sum()
-            self.weights = weights
+            
+        self.register_buffer("weights", weights)
 
     def forward(self, pred, target):
         """
@@ -146,7 +147,7 @@ class BratsDiceLoss(nn.Module):
         dice = (2. * intersection + self.smooth_nr) / (cardinality + self.smooth_dr)
         loss_per_channel = 1 - dice  # shape [3]
 
-        weights = self.weights.to(pred.device)
+        weights = self.weights.detach()
 
         if self.reduction == 'mean':
             weighted_loss = (loss_per_channel * weights).mean()

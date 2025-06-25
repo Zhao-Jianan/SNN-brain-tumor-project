@@ -10,13 +10,13 @@ from monai.transforms import (
     ToTensord, Orientationd, Spacingd
 )
 from monai.data import Dataset as MonaiDataset
+from monai.transforms.utils import allow_missing_keys_mode
 from spikingjelly.clock_driven.encoding import PoissonEncoder, LatencyEncoder, WeightedPhaseEncoder
 from config import config as cfg
 from typing import Mapping, Hashable, Sequence
 from monai.data.meta_tensor import MetaTensor
 from monai.transforms.transform import Transform
 from monai.utils import TransformBackends
-import random
 
 class BraTSDataset(MonaiDataset):
     def __init__(self, data_dicts, T=8, patch_size=(128,128,128), num_classes=4, mode="train", encode_method='poisson', debug=False):
@@ -30,10 +30,6 @@ class BraTSDataset(MonaiDataset):
         self.data_dicts = data_dicts
         self.T = T
         self.patch_size = patch_size
-        self.num_warmup_epochs = cfg.num_warmup_epochs
-        self.center_crop_prob = 1.0  # 默认100%中心crop
-        self.train_crop_mode = cfg.train_crop_mode
-        self.val_crop_mode = cfg.val_crop_mode
         self.num_classes = num_classes
         self.mode = mode
         self.debug = debug
@@ -45,7 +41,6 @@ class BraTSDataset(MonaiDataset):
         self.sep = cfg.modality_separator
         self.suffix = cfg.image_suffix
         self.et_label = cfg.et_label
-        
 
         # 读取数据，自动封装成 MetaTensor (带affine)
         self.load_transform = Compose([
@@ -67,20 +62,20 @@ class BraTSDataset(MonaiDataset):
             Orientationd(keys=["image", "label"], axcodes="RAS"),
             Spacingd(keys=["image", "label"], pixdim=(1.0, 1.0, 1.0), mode=("bilinear", "nearest")),
         ])
-        
-        self.normalize = NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True)
 
         # 数据增强 pipeline
         self.train_transform = Compose([
             RandFlipd(keys=["image", "label"], spatial_axis=0, prob=0.5),
             RandFlipd(keys=["image", "label"], spatial_axis=1, prob=0.5),
             RandFlipd(keys=["image", "label"], spatial_axis=2, prob=0.5),
+            NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
             RandScaleIntensityd(keys=["image"], factors=0.1, prob=0.5),
             RandShiftIntensityd(keys=["image"], offsets=0.1, prob=0.5),
             ToTensord(keys=["image", "label"])
         ])
 
         self.val_transform = Compose([
+            NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
             ToTensord(keys=["image", "label"])
         ])
 
@@ -98,8 +93,6 @@ class BraTSDataset(MonaiDataset):
         else:
             raise ValueError(f"Wrong ET Label in the config: {self.et_label}")
 
-        data["image"] = data["image"].permute(0, 3, 1, 2).contiguous()
-        data["label"] = data["label"].permute(0, 3, 1, 2).contiguous()  # (C, D, H, W)
         img_meta = data["image"].meta
         label_meta = data["label"].meta
         
@@ -127,170 +120,35 @@ class BraTSDataset(MonaiDataset):
             data = self.preprocess(data)
 
 
-        data = self.normalize(data)
+        data = self.patch_crop(data)
 
         if self.mode == "train":
-            data = self.patch_crop(data, mode=self.train_crop_mode)  # 随机裁剪 patch
             data = self.train_transform(data)
-            img = data["image"]  # Tensor (C, D, H, W)
-            label = data["label"]  # Tensor (C_label, D, H, W) 
-            
-            if self.debug:
-                unique_vals = torch.unique(label)
-                if label.min() < 0 or label.max() >= self.num_classes:
-                    print(f"[ERROR] Label out of range in sample {case_name}")
-                    print(f"Label unique values: {unique_vals}")
-                    raise ValueError(f"Label contains invalid class ID(s): {unique_vals.tolist()}")
-                
-                if img.dim() == 4:
-                    C = img.shape[0]
-                    for c in range(C):
-                        min_val = img[c].min().item()
-                        max_val = img[c].max().item()
-                        print(f"Channel {c}: min={min_val:.4f}, max={max_val:.4f}")
-                else:
-                    print("Not a 4D tensor; skipping per-channel stats.")
-
-            # 生成 T 个时间步的脉冲输入，重复编码
-            img_rescale = self.rescale_to_unit_range(img)
-            x_seq = self.encode_spike_input(img_rescale)
-
-            # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
-            return x_seq, label
-             
-        else: # self.mode == "val"
-            if self.val_crop_mode == "sliding_window":
-                data = self.val_transform(data)
-                img = data["image"]  # Tensor (C, D, H, W)
-                label = data["label"]  # Tensor (C_label, D, H, W) 
-                img = img.unsqueeze(0).repeat(self.T, 1, 1, 1, 1)  # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
-                return img, label
-            
-            else: # self.val_crop_mode in ["tumor_aware_random", "random"]:
-                data = self.patch_crop(data, mode=self.val_crop_mode)  # 随机裁剪 patch
-                data = self.val_transform(data)
-                
-                img = data["image"]  # Tensor (C, D, H, W)
-                label = data["label"]  # Tensor (C_label, D, H, W) 
-                
-                # 生成 T 个时间步的脉冲输入，重复编码
-                img_rescale = self.rescale_to_unit_range(img)
-                x_seq = self.encode_spike_input(img_rescale)
-
-                # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
-                return x_seq, label
-    
-
-    # 随机裁剪，支持 warmup 模式
-    # warmup 模式下，优先裁剪肿瘤中心区域；否则随机裁剪
-    def patch_crop(self, data, mode="tumor_aware_random"):
-        img = data["image"]        # (C, D, H, W)
-        label = data["label"]      # (C, D, H, W), one-hot
-        _, D, H, W = img.shape
-        pd, ph, pw = self.patch_size
-        assert D >= pd and H >= ph and W >= pw, f"Patch size {self.patch_size} too big for image {img.shape}"
-
-        if mode == "tumor_aware_random":
-        # 获取肿瘤前景 mask（任意类别）
-            foreground_mask = label.sum(axis=0) > 0
-            foreground_voxels = np.argwhere(foreground_mask.cpu().numpy())
-
-            if len(foreground_voxels) > 0:
-                # 从前景中随机选一个点作为 patch 中心
-                center = foreground_voxels[np.random.choice(len(foreground_voxels))]
-                cd, ch, cw = center
-
-                # 随机扰动中心点（增加多样性）
-                cd += np.random.randint(-pd//4, pd//4 + 1)
-                ch += np.random.randint(-ph//4, ph//4 + 1)
-                cw += np.random.randint(-pw//4, pw//4 + 1)
-
-                d_start = np.clip(cd - pd // 2, 0, D - pd)
-                h_start = np.clip(ch - ph // 2, 0, H - ph)
-                w_start = np.clip(cw - pw // 2, 0, W - pw)
-
-            else:
-                # 无肿瘤则随机裁剪
-                d_start = np.random.randint(0, D - pd + 1)
-                h_start = np.random.randint(0, H - ph + 1)
-                w_start = np.random.randint(0, W - pw + 1)
-                
-        elif mode == "tumor_center":
-        # 获取肿瘤前景 mask（任意类别）
-            foreground_mask = label.sum(axis=0) > 0
-            foreground_voxels = np.argwhere(foreground_mask.cpu().numpy())
-
-            if len(foreground_voxels) > 0:
-                # 从前景中随机选一个点作为 patch 中心
-                center = foreground_voxels[np.random.choice(len(foreground_voxels))]
-                cd, ch, cw = center
-
-                d_start = np.clip(cd - pd // 2, 0, D - pd)
-                h_start = np.clip(ch - ph // 2, 0, H - ph)
-                w_start = np.clip(cw - pw // 2, 0, W - pw)
-
-            else:
-                # 无肿瘤则随机裁剪
-                d_start = np.random.randint(0, D - pd + 1)
-                h_start = np.random.randint(0, H - ph + 1)
-                w_start = np.random.randint(0, W - pw + 1)
-                
-        elif mode == "warmup_weighted_random":
-            if random.random() < self.center_crop_prob:
-                # 偏向肿瘤区域的随机裁剪（带扰动）
-                foreground_mask = label.sum(axis=0) > 0
-                foreground_voxels = np.argwhere(foreground_mask.cpu().numpy())
-
-                if len(foreground_voxels) > 0:
-                    center = foreground_voxels[np.random.choice(len(foreground_voxels))]
-                    cd, ch, cw = center
-
-                    # 随机扰动中心点
-                    cd += np.random.randint(-pd // 4, pd // 4 + 1)
-                    ch += np.random.randint(-ph // 4, ph // 4 + 1)
-                    cw += np.random.randint(-pw // 4, pw // 4 + 1)
-
-                    d_start = np.clip(cd - pd // 2, 0, D - pd)
-                    h_start = np.clip(ch - ph // 2, 0, H - ph)
-                    w_start = np.clip(cw - pw // 2, 0, W - pw)
-
-                else:
-                    # 没有肿瘤 → 随机裁剪
-                    d_start = np.random.randint(0, D - pd + 1)
-                    h_start = np.random.randint(0, H - ph + 1)
-                    w_start = np.random.randint(0, W - pw + 1)
-
-            else:
-                # 纯随机裁剪（不管是否有肿瘤）
-                d_start = np.random.randint(0, D - pd + 1)
-                h_start = np.random.randint(0, H - ph + 1)
-                w_start = np.random.randint(0, W - pw + 1)
-                
         else:
-            # 纯随机裁剪
-            d_start = np.random.randint(0, D - pd + 1)
-            h_start = np.random.randint(0, H - ph + 1)
-            w_start = np.random.randint(0, W - pw + 1)
+            data = self.val_transform(data)
 
-        data["image"] = img[:, d_start:d_start + pd, h_start:h_start + ph, w_start:w_start + pw]
-        data["label"] = label[:, d_start:d_start + pd, h_start:h_start + ph, w_start:w_start + pw]
-        return data
+        img = data["image"]  # Tensor (C, D, H, W)
+        label = data["label"]  # Tensor (C_label, D, H, W) 
+        
+        if self.debug:
+            unique_vals = torch.unique(label)
+            if label.min() < 0 or label.max() >= self.num_classes:
+                print(f"[ERROR] Label out of range in sample {case_name}")
+                print(f"Label unique values: {unique_vals}")
+                raise ValueError(f"Label contains invalid class ID(s): {unique_vals.tolist()}")
+            
+            if img.dim() == 4:
+                C = img.shape[0]
+                for c in range(C):
+                    min_val = img[c].min().item()
+                    max_val = img[c].max().item()
+                    print(f"Channel {c}: min={min_val:.4f}, max={max_val:.4f}")
+            else:
+                print("Not a 4D tensor; skipping per-channel stats.")
 
-
-    
-    def rescale_to_unit_range(self, x: torch.Tensor) -> torch.Tensor:
-        # 逐个样本 min-max 归一化，不改变整体分布，只用于编码器
-        x_min = x.amin(dim=[1, 2, 3], keepdim=True)
-        x_max = x.amax(dim=[1, 2, 3], keepdim=True)
-        x_rescaled = (x - x_min) / (x_max - x_min + 1e-8)
-        return x_rescaled.clamp(0., 1.)
-    
-    def encode_spike_input(self, img_rescale: torch.Tensor) -> torch.Tensor:
-        """
-        对归一化图像进行脉冲编码，支持 poisson / latency / weighted_phase。
-        输入:
-            img_rescale: torch.Tensor, shape (B, C, D, H, W), 数值应已在 [0, 1] 区间 
-        """
+        # 生成 T 个时间步的脉冲输入，重复编码
+        img_rescale = self.rescale_to_unit_range(img)
+        
         if self.encode_method == 'poisson':
             x_seq = torch.stack([self.poisson_encoder(img_rescale) for _ in range(self.T)], dim=0)
         elif self.encode_method == 'latency':
@@ -307,8 +165,51 @@ class BraTSDataset(MonaiDataset):
         else:
             raise NotImplementedError(f"Encoding method '{self.encode_method}' is not implemented.")
         # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
-        return x_seq
+        return x_seq, label
 
+    
+    def patch_crop(self, data):
+        img = data["image"]        # (C, D, H, W)
+        label = data["label"]      # (C, D, H, W), one-hot
+
+        _, D, H, W = img.shape
+        pd, ph, pw = self.patch_size
+        assert D >= pd and H >= ph and W >= pw, f"Patch size {self.patch_size} too big for image {img.shape}"
+
+        # 合并 one-hot 通道，得到 (D, H, W) 的前景掩码
+        foreground_mask = label.sum(axis=0) > 0     # tensor 仍然，torch.bool
+
+        # 转 numpy 并找到非零索引坐标，结果形状是 (N, 3)
+        foreground = np.argwhere(foreground_mask.cpu().numpy())
+
+        if len(foreground) > 0:
+            center = foreground[np.random.choice(len(foreground))]
+            cd, ch, cw = center
+        else:
+            d_start = np.random.randint(0, D - pd + 1)
+            h_start = np.random.randint(0, H - ph + 1)
+            w_start = np.random.randint(0, W - pw + 1)
+
+            data["image"] = img[:, d_start:d_start + pd, h_start:h_start + ph, w_start:w_start + pw]
+            data["label"] = label[:, d_start:d_start + pd, h_start:h_start + ph, w_start:w_start + pw]
+            return data
+
+        # 计算 patch 起始位置（防越界）
+        d_start = np.clip(cd - pd // 2, 0, D - pd)
+        h_start = np.clip(ch - ph // 2, 0, H - ph)
+        w_start = np.clip(cw - pw // 2, 0, W - pw)
+
+        data["image"] = img[:, d_start:d_start + pd, h_start:h_start + ph, w_start:w_start + pw]
+        data["label"] = label[:, d_start:d_start + pd, h_start:h_start + ph, w_start:w_start + pw]
+
+        return data
+    
+    def rescale_to_unit_range(self, x: torch.Tensor) -> torch.Tensor:
+        # 逐个样本 min-max 归一化，不改变整体分布，只用于编码器
+        x_min = x.amin(dim=[1, 2, 3], keepdim=True)
+        x_max = x.amax(dim=[1, 2, 3], keepdim=True)
+        x_rescaled = (x - x_min) / (x_max - x_min + 1e-8)
+        return x_rescaled.clamp(0., 1.)
 
 
 NdarrayOrTensor = Union[np.ndarray, torch.Tensor, MetaTensor]
@@ -365,6 +266,3 @@ class ConvertToMultiChannelBasedOnBrats2023Classesd(MapTransform):
         for key in self.key_iterator(d):
             d[key] = self.converter(d[key])
         return d
-    
-    
-    

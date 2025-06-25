@@ -25,8 +25,8 @@ def dice_score_per_class(pred, target, num_classes=4, eps=1e-5):
     target_onehot = torch.nn.functional.one_hot(target, num_classes=num_classes)
 
     # Convert to [B, C, D, H, W]
-    pred_onehot = pred_onehot.permute(0, 4, 1, 2, 3).float()
-    target_onehot = target_onehot.permute(0, 4, 1, 2, 3).float()
+    pred_onehot = pred_onehot.permute(0, 4, 1, 2, 3).contiguous().float()
+    target_onehot = target_onehot.permute(0, 4, 1, 2, 3).contiguous().float()
 
     dice_per_class = []
     for c in range(1, num_classes):  # Skip background

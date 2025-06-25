@@ -193,7 +193,7 @@ def pred_single_case(case_dir, inference_dir, model, inference_engine, device, T
     label_np = label_raw.cpu().numpy().astype(np.uint8)
     label_np = np.transpose(label_np, (1, 2, 0))
     print("Label shape before postprocessing:", label_np.shape)  # (H, W, D)
-    label_np = postprocess_brats_label(label_np)
+    # label_np = postprocess_brats_label(label_np)
     print("Saved label shape:", label_np.shape)  # (H, W, D)
 
     # 以t1ce为参考保存nii
@@ -229,9 +229,9 @@ def run_inference_on_folder(case_root: str, save_dir: str, model, inference_engi
     
 
 def main():
-    case_dir = "./data/HGG/"
+    case_dir = "/hpc/ajhz839/validation/val/"
     model_ckpt = "./checkpoint/best_model_fold_inference.pth"
-    inference_dir = "./inference"
+    inference_dir = "/hpc/ajhz839/validation/test_pred"
     
     model = SpikingSwinUNet3D(window_size=cfg.window_size, T=cfg.T, step_mode=cfg.step_mode).to(cfg.device)  # 模型.to(cfg.device)
     model.load_state_dict(torch.load(model_ckpt, map_location=cfg.device))

@@ -10,6 +10,7 @@ from monai.transforms import (
     ToTensord, Orientationd, Spacingd
 )
 from monai.data import Dataset as MonaiDataset
+from monai.transforms.utils import allow_missing_keys_mode
 from spikingjelly.clock_driven.encoding import PoissonEncoder, LatencyEncoder, WeightedPhaseEncoder
 from config import config as cfg
 from typing import Mapping, Hashable, Sequence
@@ -32,8 +33,7 @@ class BraTSDataset(MonaiDataset):
         self.patch_size = patch_size
         self.num_warmup_epochs = cfg.num_warmup_epochs
         self.center_crop_prob = 1.0  # 默认100%中心crop
-        self.train_crop_mode = cfg.train_crop_mode
-        self.val_crop_mode = cfg.val_crop_mode
+        self.crop_mode = cfg.crop_mode
         self.num_classes = num_classes
         self.mode = mode
         self.debug = debug
@@ -92,14 +92,14 @@ class BraTSDataset(MonaiDataset):
         case_name = os.path.basename(data["label"]).replace(f"{self.sep}seg{self.suffix}", "")
 
         if self.et_label == 4:
-            data = self.load_transform(data)  # load nii -> MetaTensor (C, D, H, W) + affine
+            data = self.load_transform(data)  # load nii -> MetaTensor (C, H, W, D) + affine
         elif self.et_label == 3:
-            data = self.load_transform_custom_convert(data)  # load nii -> MetaTensor (C, D, H, W) + affine
+            data = self.load_transform_custom_convert(data)  # load nii -> MetaTensor (C, H, W, D) + affine
         else:
             raise ValueError(f"Wrong ET Label in the config: {self.et_label}")
 
-        data["image"] = data["image"].permute(0, 3, 1, 2).contiguous()
-        data["label"] = data["label"].permute(0, 3, 1, 2).contiguous()  # (C, D, H, W)
+        data["image"] = data["image"].permute(0, 3, 1, 2)  # (C, H, W, D) -> (C, D, H, W)
+        data["label"] = data["label"].permute(0, 3, 1, 2)  # (C, H, W, D) -> (C, D, H, W)
         img_meta = data["image"].meta
         label_meta = data["label"].meta
         
@@ -128,9 +128,9 @@ class BraTSDataset(MonaiDataset):
 
 
         data = self.normalize(data)
-
+        
         if self.mode == "train":
-            data = self.patch_crop(data, mode=self.train_crop_mode)  # 随机裁剪 patch
+            data = self.patch_crop(data, mode=self.crop_mode)  # 随机裁剪 patch
             data = self.train_transform(data)
             img = data["image"]  # Tensor (C, D, H, W)
             label = data["label"]  # Tensor (C_label, D, H, W) 
@@ -157,29 +157,16 @@ class BraTSDataset(MonaiDataset):
 
             # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
             return x_seq, label
-             
-        else: # self.mode == "val"
-            if self.val_crop_mode == "sliding_window":
-                data = self.val_transform(data)
-                img = data["image"]  # Tensor (C, D, H, W)
-                label = data["label"]  # Tensor (C_label, D, H, W) 
-                img = img.unsqueeze(0).repeat(self.T, 1, 1, 1, 1)  # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
-                return img, label
             
-            else: # self.val_crop_mode in ["tumor_aware_random", "random"]:
-                data = self.patch_crop(data, mode=self.val_crop_mode)  # 随机裁剪 patch
-                data = self.val_transform(data)
-                
-                img = data["image"]  # Tensor (C, D, H, W)
-                label = data["label"]  # Tensor (C_label, D, H, W) 
-                
-                # 生成 T 个时间步的脉冲输入，重复编码
-                img_rescale = self.rescale_to_unit_range(img)
-                x_seq = self.encode_spike_input(img_rescale)
+            
+        else:
+            data = self.val_transform(data)
+            img = data["image"]  # Tensor (C, D, H, W)
+            label = data["label"]  # Tensor (C_label, D, H, W) 
+            img = img.unsqueeze(0).repeat(self.T, 1, 1, 1, 1)  # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
+            return img, label
 
-                # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
-                return x_seq, label
-    
+
 
     # 随机裁剪，支持 warmup 模式
     # warmup 模式下，优先裁剪肿瘤中心区域；否则随机裁剪
@@ -204,26 +191,6 @@ class BraTSDataset(MonaiDataset):
                 cd += np.random.randint(-pd//4, pd//4 + 1)
                 ch += np.random.randint(-ph//4, ph//4 + 1)
                 cw += np.random.randint(-pw//4, pw//4 + 1)
-
-                d_start = np.clip(cd - pd // 2, 0, D - pd)
-                h_start = np.clip(ch - ph // 2, 0, H - ph)
-                w_start = np.clip(cw - pw // 2, 0, W - pw)
-
-            else:
-                # 无肿瘤则随机裁剪
-                d_start = np.random.randint(0, D - pd + 1)
-                h_start = np.random.randint(0, H - ph + 1)
-                w_start = np.random.randint(0, W - pw + 1)
-                
-        elif mode == "tumor_center":
-        # 获取肿瘤前景 mask（任意类别）
-            foreground_mask = label.sum(axis=0) > 0
-            foreground_voxels = np.argwhere(foreground_mask.cpu().numpy())
-
-            if len(foreground_voxels) > 0:
-                # 从前景中随机选一个点作为 patch 中心
-                center = foreground_voxels[np.random.choice(len(foreground_voxels))]
-                cd, ch, cw = center
 
                 d_start = np.clip(cd - pd // 2, 0, D - pd)
                 h_start = np.clip(ch - ph // 2, 0, H - ph)
@@ -365,6 +332,3 @@ class ConvertToMultiChannelBasedOnBrats2023Classesd(MapTransform):
         for key in self.key_iterator(d):
             d[key] = self.converter(d[key])
         return d
-    
-    
-    
