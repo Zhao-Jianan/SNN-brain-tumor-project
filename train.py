@@ -132,7 +132,7 @@ monitor_val = None
 
 
 # 训练和验证函数
-def train(train_loader, model, optimizer, criterion, device, monitor=None, debug=False, compute_time=False):
+def train(train_loader, model, optimizer, criterion, device, monitor=None, debug=False, compute_time=True):
     model.train()
     if monitor:
         monitor.register_hooks(model)

@@ -33,9 +33,11 @@ def main():
     
     # case_dirs = [os.path.join(cfg.root_dir, d) for d in os.listdir(cfg.root_dir) if os.path.isdir(os.path.join(cfg.root_dir, d))]
     case_dirs = []
-    for root in cfg.root_dirs:  # cfg.root_dirs = ['./data/HGG', './data/LGG']
+    for root in cfg.root_dirs:  # e.g., ['./data/HGG', './data/LGG']
+        if not os.path.isdir(root):
+            raise FileNotFoundError(f"Root directory '{root}' does not exist or is not a directory.")
         case_dirs += sorted(glob(os.path.join(root, '*')))
-    
+        
     
     # 打印配置名
     print(cfg.device)
