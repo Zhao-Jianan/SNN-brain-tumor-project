@@ -35,7 +35,7 @@ class Config:
         self.num_heads = [4, 6, 8, 12]  # 96-[4, 6, 8, 12]  64-[4, 4, 8, 8]
         self.num_classes = 3
         self.T = 4
-        self.num_epochs = 500
+        self.num_epochs = 600
         self.batch_size = 1
         self.k_folds = 5
         self.loss_function = 'dice' # dice, focal
@@ -48,7 +48,7 @@ class Config:
         self.compute_hd = False
 
         self.scheduler = 'polynomial' # cosine, polynomial
-        self.power = 1.8  # 300-2.0
+        self.power = 2.0  # 300-2.0
         self.num_warmup_epochs = -1  # -1表示不使用warmup
         self.early_stop_patience = 80
         

@@ -78,24 +78,25 @@ def plot_modalities_with_masks(t1, t1ce, t2, flair, gt_mask, pred_mask, slice_id
 
 def main():
     # 设置数据目录和文件路径
-    data_dir = './data/val/Brats18_TCIA13_617_1'  # e.g., BraTS_XXXX/
-    # case_name = os.path.basename(data_dir)
-
-    # t1_path = os.path.join(data_dir, case_name + '_t1.nii')
-    # t1ce_path = os.path.join(data_dir, case_name + '_t1ce.nii')
-    # t2_path = os.path.join(data_dir, case_name + '_t2.nii')
-    # flair_path = os.path.join(data_dir, case_name + '_flair.nii')
-    # gt_mask_path = os.path.join(data_dir, case_name + '_seg.nii')     # ground truth
-    # pred_mask_path = os.path.join(data_dir, case_name + '_pred_mask.nii') # model prediction
-    
+    data_dir = './data/MICCAI_BraTS_2018_Data_Training/HGG/Brats18_2013_27_1'
+    pred_dir = './pred'
     case_name = os.path.basename(data_dir)
 
-    t1_path = os.path.join(data_dir,'t1.nii.gz')
-    t1ce_path = os.path.join(data_dir, 't1ce.nii.gz')
-    t2_path = os.path.join(data_dir, 't2.nii.gz')
-    flair_path = os.path.join(data_dir, 'flair.nii.gz')
-    gt_mask_path = os.path.join('./val_pred/nnUNetTrainer', case_name + '.nii.gz')     # ground truth
-    pred_mask_path = os.path.join('./val_pred/test_pred', case_name + '_pred_mask.nii.gz') # model prediction   
+    t1_path = os.path.join(data_dir, case_name + '_t1.nii')
+    t1ce_path = os.path.join(data_dir, case_name + '_t1ce.nii')
+    t2_path = os.path.join(data_dir, case_name + '_t2.nii')
+    flair_path = os.path.join(data_dir, case_name + '_flair.nii')
+    gt_mask_path = os.path.join(data_dir, case_name + '_seg.nii')     # ground truth
+    pred_mask_path = os.path.join(pred_dir, case_name + '_pred_mask.nii.gz') # model prediction
+    
+    # case_name = os.path.basename(data_dir)
+
+    # t1_path = os.path.join(data_dir,'t1.nii.gz')
+    # t1ce_path = os.path.join(data_dir, 't1ce.nii.gz')
+    # t2_path = os.path.join(data_dir, 't2.nii.gz')
+    # flair_path = os.path.join(data_dir, 'flair.nii.gz')
+    # gt_mask_path = os.path.join('./val_pred/nnUNetTrainer', case_name + '.nii.gz')     # ground truth
+    # pred_mask_path = os.path.join('./val_pred/test_pred', case_name + '_pred_mask.nii.gz') # model prediction   
     
 
     # 加载图像数据

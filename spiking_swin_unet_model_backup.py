@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from einops import rearrange
 from spikingjelly.activation_based import neuron, functional, surrogate, layer, base
 from config import config as cfg
 
@@ -38,32 +39,26 @@ class LayerNorm3D(base.MemoryModule):
 # 模型结构
 def create_3d_shift_mask(window_size, shift_size):
     """
-    掩码生成，返回形状[N, N]的bool mask
+    创建 3D shift attention mask，用于模拟 Swin Transformer 中的遮挡机制
     """
     D, H, W = window_size
     Sd, Sh, Sw = shift_size
-    if Sd == 0 and Sh == 0 and Sw == 0:
-        return None  # 无需掩码
-    
-    img_mask = torch.zeros((1, D, H, W))
-
     cnt = 0
-    d_slices = (slice(0, D - Sd), slice(D - Sd, D)) if Sd > 0 else (slice(0, D),)
-    h_slices = (slice(0, H - Sh), slice(H - Sh, H)) if Sh > 0 else (slice(0, H),)
-    w_slices = (slice(0, W - Sw), slice(W - Sw, W)) if Sw > 0 else (slice(0, W),)
-
-    for d in d_slices:
-        for h in h_slices:
-            for w in w_slices:
+    img_mask = torch.zeros((1, D, H, W))
+    
+    # 将每个局部区域赋予不同的mask ID，便于后续构建attention遮挡关系
+    for d in (slice(0, -Sd), slice(-Sd, None)):
+        for h in (slice(0, -Sh), slice(-Sh, None)):
+            for w in (slice(0, -Sw), slice(-Sw, None)):
                 img_mask[:, d, h, w] = cnt
                 cnt += 1
-
-    mask_windows = img_mask.contiguous().view(-1)
-    attn_mask = mask_windows[:, None] != mask_windows[None, :]  # (N, N)
-    attn_mask = attn_mask.bool().unsqueeze(0).unsqueeze(0)  # -> [1, 1, N, N]
-    attn_mask_float = torch.zeros_like(attn_mask, dtype=torch.float32)
-    attn_mask_float.masked_fill_(attn_mask, float('-inf'))
-    return attn_mask_float
+    
+    # 拉平成一维，再比较不同token之间的mask id是否一致
+    mask_windows = img_mask.reshape(1, -1)
+    attn_mask = (mask_windows != mask_windows.transpose(1, 0)).float()
+    attn_mask = attn_mask.masked_fill(attn_mask == 1, float('-inf')).masked_fill(attn_mask == 0, 0.0)
+    attn_mask = attn_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, N, N]
+    return attn_mask
 
 
 class SpikingShiftedWindowAttention3D(base.MemoryModule):
@@ -78,11 +73,6 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         self.scale = self.head_dim ** -0.5          # 缩放因子，防止 softmax 爆炸
         self.step_mode = step_mode                  # 's' 单步 / 'm' 多步
 
-        assert embed_dim % num_heads == 0, "embed_dim 必须能整除 num_heads"
-        assert len(window_size) == 3, "window_size 必须为3维tuple"
-        assert len(self.shift_size) == 3, "shift_size 必须为3维tuple"
-
-        
         # 线性变换产生 QKV
         self.qkv = nn.Linear(embed_dim, embed_dim * 3, bias=False)
         self.proj = nn.Linear(embed_dim, embed_dim)  # 输出投影
@@ -104,7 +94,7 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         wd, wh, ww = self.window_size
         x = x.view(B, C, D // wd, wd, H // wh, wh, W // ww, ww)
         x = x.permute(0, 2, 4, 6, 1, 3, 5, 7).contiguous()
-        x = x.view(-1, C, wd * wh * ww).transpose(1, 2).contiguous()  # [B*num_win, N, C]
+        x = x.view(-1, C, wd * wh * ww).transpose(1, 2)  # [B*num_win, N, C]
         return x, B, D, H, W
 
     def _window_reverse(self, x_windows: torch.Tensor, B, D, H, W):
@@ -120,59 +110,49 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         return x
 
 
-    def _attention_forward(self, x_windows: torch.Tensor, batch_size: int):
+    def scaled_dot_attn(self, q, k, v, mask=None):
         """
-        统一的注意力计算逻辑
-        x_windows: [batch_size * num_windows, N, C]
-        batch_size: 单步时是 B，多步时是 T*B
-        返回: [batch_size * num_windows, N, C] 处理后窗口张量
-        """       
-        # QKV分解
-        qkv = self.qkv(x_windows)
-        qkv = qkv.view(qkv.size(0), qkv.size(1), 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4).contiguous()
-        q, k, v = qkv[0], qkv[1], qkv[2]
-
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B*num_windows, H, N, N]
-
-        # # 使用相对位置索引取出偏置值：shape [N*N, H]
-        # relative_position_bias = self.relative_position_table[self.relative_position_index.view(-1)]  # (N*N, H)
-
-        # # 重新 reshape 为 [H, N, N]，即每个 head 的偏置矩阵
-        # relative_position_bias = rearrange(relative_position_bias, '(n1 n2) h -> h n1 n2', 
-        #                                    n1=self.relative_position_index.shape[0])
-
-        # # 添加到注意力矩阵中，自动广播为 [B, H, N, N]
-        # attn = attn + relative_position_bias.unsqueeze(0)  # [1, H, N, N]
-        
-        if self.attn_mask is not None:
-            attn = attn + self.attn_mask.to(attn.device)
-        attn = torch.softmax(attn, dim=-1)        
-        out = torch.matmul(attn, v)  # [batch_size*num_windows, num_heads, N, head_dim]        
-        out = out.permute(0, 2, 1, 3).contiguous().view(out.size(0), out.size(2), self.embed_dim)
-
-        out = self.proj(out)       
-        return out  # [batch_size*num_windows, N, C]
-  
+        标准的多头 dot-product attention
+        输入: q, k, v [B*win, h, N, d]
+        输出: attention 输出 [B*win, h, N, d]
+        """
+        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B*win, h, N, N]
+        if mask is not None:
+            attn = attn + mask.to(attn.device)  # 应用shift attention遮罩
+        attn = torch.softmax(attn, dim=-1)
+        out = torch.matmul(attn, v)  # [B*win, h, N, d]
+        return out
 
     def forward_single_step(self, x: torch.Tensor):
         """
         单步输入：[B, C, D, H, W]
         """
         B, C, D, H, W = x.shape
+        wd, wh, ww = self.window_size
         sd, sh, sw = self.shift_size
 
         if any(s > 0 for s in self.shift_size):
-            x = torch.roll(x, shifts=(-sd, -sh, -sw), dims=(2, 3, 4))
+            x = torch.roll(x, shifts=(-sd, -sh, -sw), dims=(2, 3, 4))  # shifted window
 
-        x_windows, B, D, H, W = self._window_partition(x)
+        x_windows, B, D, H, W = self._window_partition(x)  # [B*num_win, N, C]
 
-        out = self._attention_forward(x_windows, B)
-        out = self.sn(out)
+        # 生成 Q, K, V 并重构为多头形式
+        qkv = self.qkv(x_windows)  # [B*num_win, N, 3*C]
+        qkv = qkv.view(qkv.size(0), qkv.size(1), 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4).contiguous()
+        q, k, v = qkv[0], qkv[1], qkv[2]  # [B*num_win, h, N, d]
+
+        # 注意力 + 输出
+        out = self.scaled_dot_attn(q, k, v, self.attn_mask)
+        out = out.permute(0, 2, 1, 3).contiguous().view(out.size(0), out.size(2), self.embed_dim)
+        out = self.proj(out)
+        # out = self.dropout(out)
+        # out = out + x_windows
+        out = self.sn(out)  # 脉冲激活
+
         x = self._window_reverse(out, B, D, H, W)
-
         if any(s > 0 for s in self.shift_size):
-            x = torch.roll(x, shifts=(sd, sh, sw), dims=(2, 3, 4))
-
+            x = torch.roll(x, shifts=(sd, sh, sw), dims=(2, 3, 4))  # shift back
         return x
 
     def forward_multi_step(self, x: torch.Tensor):
@@ -189,9 +169,16 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         x = x.view(T * B, C, D, H, W)
         x_windows, new_B, D, H, W = self._window_partition(x)
 
-        out = self._attention_forward(x_windows, T * B)
+        # QKV分解
+        qkv = self.qkv(x_windows)
+        qkv = qkv.view(qkv.size(0), qkv.size(1), 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4).contiguous()
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        out = self.scaled_dot_attn(q, k, v, self.attn_mask)
+        out = out.permute(0, 2, 1, 3).contiguous().view(out.size(0), out.size(2), self.embed_dim)
 
         # 脉冲激活
+        out = self.proj(out)
         # out = self.dropout(out)
         # out = out + x_windows
         out = out.view(T, B, -1, self.embed_dim)
@@ -214,6 +201,8 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
             raise NotImplementedError(f"Unsupported step_mode: {self.step_mode}")
 
 
+
+
 class SpikingSwinTransformerBlock3D(base.MemoryModule):
     def __init__(self, embed_dim, mlp_dim, num_heads, window_size=(2, 2, 2), shift=False, dropout=0.1, step_mode='s'):
         super().__init__()       
@@ -230,46 +219,66 @@ class SpikingSwinTransformerBlock3D(base.MemoryModule):
         self.sn2 = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)       
         self.dropout = layer.Dropout(dropout, step_mode=step_mode)
 
-    def _linear_forward(self, x):
-        x1 = self.linear1(x)
-        x1 = self.sn1(x1)
-        # x1 = self.gelu(x1)
-        x2 = self.linear2(x1)
-        #x2 = self.dropout(x2)
-        output = self.sn2(x2)  
-        output = self.dropout(output)
-        return output
-
     def forward(self, x):
-        residual = x
-        x = self.norm1(x)
-        x = self.attn(x)
-        x = x + residual # 残差连接
-
-        residual = x
-        x = self.norm2(x)
-                
         if self.step_mode == 's':
+            # -------------------------------
             # 单步输入: [B, C, D, H, W]
+            # -------------------------------
+            residual = x
+            x = self.norm1(x)
+            x = self.attn(x)
+            x = x + residual
+
+            residual = x
+            x = self.norm2(x)
+
             B, C, D, H, W = x.shape
             x = x.permute(0, 2, 3, 4, 1).contiguous()  # (B, D, H, W, C)
             x = x.view(B, D * H * W, C)  # (B, N, C)
-            x = self._linear_forward(x)
+
+            x = self.linear1(x)
+            x = self.sn1(x)
+            x = self.linear2(x)
+            x = self.sn2(x)
+            x = self.dropout(x)
+
             x = x.view(B, D, H, W, C)
             x = x.permute(0, 4, 1, 2, 3).contiguous()  # (B, C, D, H, W)
+            
+            x = x + residual
+            return x
+
         elif self.step_mode == 'm':
+            # -------------------------------
             # 多步输入: [T, B, C, D, H, W]
+            # -------------------------------
+            residual = x
+            x = self.norm1(x)
+            x = self.attn(x)
+            x = x + residual
+
+            residual = x
+            x = self.norm2(x)
+
             T, B, C, D, H, W = x.shape
             x = x.permute(0, 1, 3, 4, 5, 2).contiguous()  # (T, B, D, H, W, C)
             x = x.view(T * B, D * H * W, C)  # (T*B, N, C)
-            x = self._linear_forward(x)
+
+            x = self.linear1(x)
+            x = self.sn1(x)
+            x = self.linear2(x)
+            x = self.sn2(x)
+            x = self.dropout(x)
+
             x = x.view(T, B, D, H, W, C)
             x = x.permute(0, 1, 5, 2, 3, 4).contiguous()  # (T, B, C, D, H, W)
+
+            x = x + residual
+            return x
+
         else:
             raise NotImplementedError(f"Unsupported step_mode: {self.step_mode}")
-        
-        x = x + residual
-        return x
+
 
 class SpikingSwinTransformerStage3D(base.MemoryModule):
     def __init__(self, embed_dim, num_heads, layers, window_size=(2, 2, 2), dropout=0.1, step_mode='s'):

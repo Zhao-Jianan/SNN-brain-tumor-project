@@ -4,34 +4,34 @@ from spikingjelly.activation_based import neuron, functional, surrogate, layer, 
 from config import config as cfg
 
 # 使用spikingjelly的多步模式
-class LayerNorm3D(base.MemoryModule):
-    """
-    支持单步（step_mode='s'）和多步（step_mode='m'）模式。
-    """
+# class LayerNorm3D(base.MemoryModule):
+#     """
+#     支持单步（step_mode='s'）和多步（step_mode='m'）模式。
+#     """
 
-    def __init__(self, num_channels, step_mode='s'):
-        super().__init__()
-        self.norm = nn.LayerNorm(num_channels)
-        assert step_mode in ('s', 'm'), "step_mode must be 's' or 'm'"
-        self.step_mode = step_mode
+#     def __init__(self, num_channels, step_mode='s'):
+#         super().__init__()
+#         self.norm = nn.LayerNorm(num_channels)
+#         assert step_mode in ('s', 'm'), "step_mode must be 's' or 'm'"
+#         self.step_mode = step_mode
 
-    def forward(self, x):
-        if self.step_mode == 's':
-            # 单步输入 [B, C, D, H, W]
-            x = x.permute(0, 2, 3, 4, 1).contiguous()  # -> [B, D, H, W, C]
-            x = self.norm(x)
-            x = x.permute(0, 4, 1, 2, 3).contiguous()  # -> [B, C, D, H, W]
-            return x
+#     def forward(self, x):
+#         if self.step_mode == 's':
+#             # 单步输入 [B, C, D, H, W]
+#             x = x.permute(0, 2, 3, 4, 1).contiguous()  # -> [B, D, H, W, C]
+#             x = self.norm(x)
+#             x = x.permute(0, 4, 1, 2, 3).contiguous()  # -> [B, C, D, H, W]
+#             return x
 
-        elif self.step_mode == 'm':
-            # 多步输入 [T, B, C, D, H, W]
-            T, B, C, D, H, W = x.shape
-            x = x.view(T * B, C, D, H, W)  # 合并时间和batch
-            x = x.permute(0, 2, 3, 4, 1).contiguous()  # -> [T*B, D, H, W, C]
-            x = self.norm(x)
-            x = x.permute(0, 4, 1, 2, 3).contiguous()  # -> [T*B, C, D, H, W]
-            x = x.view(T, B, C, D, H, W)   # 拆回 [T, B, C, D, H, W]
-            return x
+#         elif self.step_mode == 'm':
+#             # 多步输入 [T, B, C, D, H, W]
+#             T, B, C, D, H, W = x.shape
+#             x = x.view(T * B, C, D, H, W)  # 合并时间和batch
+#             x = x.permute(0, 2, 3, 4, 1).contiguous()  # -> [T*B, D, H, W, C]
+#             x = self.norm(x)
+#             x = x.permute(0, 4, 1, 2, 3).contiguous()  # -> [T*B, C, D, H, W]
+#             x = x.view(T, B, C, D, H, W)   # 拆回 [T, B, C, D, H, W]
+#             return x
 
 
 
@@ -219,11 +219,12 @@ class SpikingSwinTransformerBlock3D(base.MemoryModule):
         super().__init__()       
         shift_size = tuple(ws // 2 for ws in window_size) if shift else (0, 0, 0)
 
-        self.norm1 = LayerNorm3D(embed_dim, step_mode=step_mode)
+        # self.norm1 = LayerNorm3D(embed_dim, step_mode=step_mode)
+        self.norm1 = layer.GroupNorm(num_groups=8, num_channels=embed_dim, step_mode=step_mode) # 使用 GroupNorm 替代 LayerNorm
         self.attn = SpikingShiftedWindowAttention3D(embed_dim, num_heads, window_size, shift_size, dropout, step_mode=step_mode)
 
-        self.norm2 = LayerNorm3D(embed_dim, step_mode=step_mode)
-        
+        # self.norm2 = LayerNorm3D(embed_dim, step_mode=step_mode)
+        self.norm2 = layer.GroupNorm(num_groups=8, num_channels=embed_dim, step_mode=step_mode)
         self.linear1 = layer.Linear(embed_dim, mlp_dim, step_mode=step_mode)
         self.sn1 = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
         self.linear2 = layer.Linear(mlp_dim, embed_dim, step_mode=step_mode)
@@ -298,7 +299,8 @@ class SpikingPatchEmbed3D(base.MemoryModule):
     def __init__(self, in_channels, embed_dim, patch_size=(2, 2, 2), step_mode='m'):
         super().__init__()
         self.proj = layer.Conv3d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size, step_mode=step_mode)
-        self.norm = LayerNorm3D(embed_dim, step_mode=step_mode)
+        # self.norm = LayerNorm3D(embed_dim, step_mode=step_mode)
+        self.norm = layer.GroupNorm(num_groups=8, num_channels=embed_dim, step_mode=step_mode)
         self.sn = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
         functional.set_step_mode(self, step_mode=step_mode)
 
@@ -312,7 +314,8 @@ class SpikingPatchExpand3D(base.MemoryModule):
     def __init__(self, in_channels, out_channels, kernel_size=(2,2,2), stride=2, dropout=0.1, step_mode='s'):
         super().__init__()
         self.conv_transpose = layer.ConvTranspose3d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, step_mode=step_mode)
-        self.norm = LayerNorm3D(out_channels, step_mode=step_mode)
+        # self.norm = LayerNorm3D(out_channels, step_mode=step_mode)
+        self.norm = layer.GroupNorm(num_groups=8, num_channels=out_channels, step_mode=step_mode)
         self.sn = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
         functional.set_step_mode(self, step_mode)
 
@@ -327,7 +330,8 @@ class FinalSpikingPatchExpand3D(base.MemoryModule):
     def __init__(self, in_channels, out_channels, kernel_size=(2,2,2), stride=2, dropout=0.1, step_mode='s'):
         super().__init__()
         self.conv_transpose = layer.ConvTranspose3d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, step_mode=step_mode)
-        self.norm = LayerNorm3D(out_channels, step_mode=step_mode)
+        # self.norm = LayerNorm3D(out_channels, step_mode=step_mode)
+        self.norm = layer.GroupNorm(num_groups=8, num_channels=out_channels, step_mode=step_mode)
         self.sn = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
 
         functional.set_step_mode(self, step_mode)
@@ -339,31 +343,31 @@ class FinalSpikingPatchExpand3D(base.MemoryModule):
         return x
 
 
-class SpikingConcatReduce3D(base.MemoryModule):
-    def __init__(self, in_channels, out_channels, step_mode='s'):
-        super().__init__()
-        concat_channels = in_channels * 2
+# class SpikingConcatReduce3D(base.MemoryModule):
+#     def __init__(self, in_channels, out_channels, step_mode='s'):
+#         super().__init__()
+#         concat_channels = in_channels * 2
 
-        self.norm1 = LayerNorm3D(concat_channels, step_mode=step_mode)
-        self.conv = layer.Conv3d(concat_channels, out_channels, kernel_size=1, step_mode=step_mode)
-        self.norm2 = LayerNorm3D(out_channels, step_mode=step_mode)
+#         self.norm1 = LayerNorm3D(concat_channels, step_mode=step_mode)
+#         self.conv = layer.Conv3d(concat_channels, out_channels, kernel_size=1, step_mode=step_mode)
+#         self.norm2 = LayerNorm3D(out_channels, step_mode=step_mode)
 
-        functional.set_step_mode(self, step_mode)
+#         functional.set_step_mode(self, step_mode)
 
-    def forward(self, x1, x2):
-        x = torch.cat([x1, x2], dim=1)  # Concatenate along channel dimension
-        x = self.norm1(x)
-        x = self.conv(x)
-        x = self.norm2(x)
-        return x
+#     def forward(self, x1, x2):
+#         x = torch.cat([x1, x2], dim=1)  # Concatenate along channel dimension
+#         x = self.norm1(x)
+#         x = self.conv(x)
+#         x = self.norm2(x)
+#         return x
 
     
 
 class SpikingAddConverge3D(base.MemoryModule):
     def __init__(self, channels, step_mode='s'):
         super().__init__()
-        self.norm = LayerNorm3D(channels, step_mode=step_mode)
-        
+        # self.norm = LayerNorm3D(channels, step_mode=step_mode)
+        self.norm = layer.GroupNorm(num_groups=8, num_channels=channels, step_mode=step_mode)
         functional.set_step_mode(self, step_mode)
 
     def forward(self, x1, x2):

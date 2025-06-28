@@ -2,7 +2,6 @@ import torch
 import numpy as np
 from metrics import dice_score_braTS, compute_hd95
 import time
-import torch.nn.functional as F
 from inference_helper import TemporalSlidingWindowInference
 from config import config as cfg
 from collections import defaultdict
@@ -132,7 +131,7 @@ monitor_val = None
 
 
 # 训练和验证函数
-def train(train_loader, model, optimizer, criterion, device, monitor=None, debug=False, compute_time=True):
+def train(train_loader, model, optimizer, criterion, device, monitor=None, debug=False, compute_time=False):
     model.train()
     if monitor:
         monitor.register_hooks(model)
@@ -152,8 +151,7 @@ def train(train_loader, model, optimizer, criterion, device, monitor=None, debug
                 print(f"[FATAL] y contains NaN/Inf at batch, stopping.")
                 break
         
-
-        x_seq = x_seq.permute(1, 0, 2, 3, 4, 5).contiguous().to(device)  # [B, T, 1, D, H, W] → [T, B, 1, D, H, W]
+        x_seq = x_seq.permute(1, 0, 2, 3, 4, 5).contiguous().to(device)   # [B, T, 1, D, H, W] → [T, B, 1, D, H, W]
         if compute_time:
             time1 = time.time()
             print(f"[DEBUG] Permute time: {time1 - start_time:.4f} seconds")
@@ -306,7 +304,7 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
     lr_history = []
 
     best_dice = 0.0
-    min_dice_threshold = 0.6
+    min_dice_threshold = 0.65
     warmup_epochs = cfg.num_warmup_epochs
     train_crop_mode = cfg.train_crop_mode
 

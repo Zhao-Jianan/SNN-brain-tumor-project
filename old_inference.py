@@ -195,8 +195,6 @@ def postprocess_brats_label(pred_mask: np.ndarray) -> np.ndarray:
     return new_mask
 
 
-
-
 def main():
     # 路径配置
     case_dir = "./data/HGG/Brats18_CBICA_AAB_1"  # case文件夹

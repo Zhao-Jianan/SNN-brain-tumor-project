@@ -116,7 +116,6 @@ class TemporalSlidingWindowInference:
         inputs_rescaled = inputs_rescaled.view(-1, D, H, W)
         inputs_rescaled = F.pad(inputs_rescaled, pad=pad, mode="constant", value=0.0)
         inputs_rescaled = inputs_rescaled.view(T, B, C, D + pad_d, H + pad_h, W + pad_w)
-
         D_pad, H_pad, W_pad = inputs_rescaled.shape[-3:]
         padded = any([pad_d, pad_h, pad_w])
         pad_info = (pad_d, pad_h, pad_w, D, H, W)

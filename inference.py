@@ -5,7 +5,6 @@ import os
 from spiking_swin_unet_model import SpikingSwinUNet3D
 import torch.nn.functional as F
 from config import config as cfg
-from spikingjelly.activation_based.encoding import PoissonEncoder
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd, NormalizeIntensityd,
     Orientationd, Spacingd, ToTensord
@@ -32,7 +31,7 @@ def preprocess_for_inference(image_paths, T=8):
         EnsureChannelFirstd(keys=["image"]),
     ])
     data = load_transform(data_dict)
-    data["image"] = data["image"].permute(0, 3, 1, 2)
+    data["image"] = data["image"].permute(0, 3, 1, 2).contiguous()
     print("Loaded image shape:", data["image"].shape)  # (C, D, H, W)
     
     img_meta = data["image"].meta
@@ -166,8 +165,10 @@ def postprocess_brats_label(pred_mask: np.ndarray) -> np.ndarray:
 def pred_single_case(case_dir, inference_dir, model, inference_engine, device, T=8):
     # 用cfg.modalities拼4模态路径
     case_name = os.path.basename(case_dir)
-    # image_paths = [os.path.join(case_dir, f"{case_name}_{mod}.nii") for mod in cfg.modalities]
-    image_paths = [os.path.join(case_dir, f"{mod}.nii.gz") for mod in cfg.modalities]
+    print(f"Processing case: {case_name}")
+    image_paths = [os.path.join(case_dir, f"{case_name}_{mod}.nii") for mod in cfg.modalities]
+    print("Image paths:", image_paths)
+    # image_paths = [os.path.join(case_dir, f"{mod}.nii.gz") for mod in cfg.modalities]
 
     # 预处理，返回 (T, C, D, H, W) Tensor
     x_seq = preprocess_for_inference(image_paths, T=T)
@@ -229,9 +230,9 @@ def run_inference_on_folder(case_root: str, save_dir: str, model, inference_engi
     
 
 def main():
-    case_dir = "/hpc/ajhz839/validation/val/"
+    case_dir = "./data/HGG/Brats18_2013_27_1"
     model_ckpt = "./checkpoint/best_model_fold_inference.pth"
-    inference_dir = "/hpc/ajhz839/validation/test_pred"
+    inference_dir = "./pred"
     
     model = SpikingSwinUNet3D(window_size=cfg.window_size, T=cfg.T, step_mode=cfg.step_mode).to(cfg.device)  # 模型.to(cfg.device)
     model.load_state_dict(torch.load(model_ckpt, map_location=cfg.device))
@@ -248,8 +249,10 @@ def main():
     )
     
     if os.path.isdir(case_dir) and any(os.path.isdir(os.path.join(case_dir, f)) for f in os.listdir(case_dir)):
+        print(f"Running batch inference")
         run_inference_on_folder(case_dir, inference_dir, model, inference_engine, cfg.device, cfg.T)
     else:
+        print(f"Running single inference")
         run_inference_on_case(case_dir, inference_dir, model, inference_engine, cfg.device, cfg.T)
 
     
