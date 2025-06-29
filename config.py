@@ -2,7 +2,7 @@ import torch
 
 class Config:
     def __init__(self):
-        self.gpu_name = 'cuda:1'
+        self.gpu_name = 'cuda:5'
         self.device = torch.device(self.gpu_name if torch.cuda.is_available() else "cpu")
         self.seed =  3407 # 42, 3407
         
@@ -39,7 +39,7 @@ class Config:
         self.batch_size = 1
         self.k_folds = 5
         self.loss_function = 'dice' # dice, focal
-        self.loss_weights = [2.0, 1.0, 4.0] # [2.0, 1.0, 4.0]
+        self.loss_weights = [1.0, 1.0, 1.0] # [2.0, 1.0, 4.0]
         self.train_crop_mode = "tumor_aware_random"  # tumor_aware_random, warmup_weighted_random, random, tumor_center
         self.val_crop_mode = 'tumor_aware_random' # tumor_aware_random, sliding_window, random, tumor_center
         self.overlap = 0.5

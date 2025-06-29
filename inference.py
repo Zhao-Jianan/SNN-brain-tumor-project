@@ -2,9 +2,11 @@ import torch
 import nibabel as nib
 import numpy as np
 import os
+from einops import rearrange
 from spiking_swin_unet_model import SpikingSwinUNet3D
 import torch.nn.functional as F
 from config import config as cfg
+from spikingjelly.activation_based.encoding import PoissonEncoder
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd, NormalizeIntensityd,
     Orientationd, Spacingd, ToTensord
@@ -31,7 +33,7 @@ def preprocess_for_inference(image_paths, T=8):
         EnsureChannelFirstd(keys=["image"]),
     ])
     data = load_transform(data_dict)
-    data["image"] = data["image"].permute(0, 3, 1, 2).contiguous()
+    data["image"] = rearrange(data["image"], 'c h w d -> c d h w')
     print("Loaded image shape:", data["image"].shape)  # (C, D, H, W)
     
     img_meta = data["image"].meta

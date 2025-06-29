@@ -4,7 +4,7 @@ os.chdir(os.path.dirname(__file__))
 import torch
 import torch.optim as optim
 from sklearn.model_selection import KFold
-from spiking_swin_unet_model_neuronnorm import SpikingSwinUNet3D
+from spiking_swin_unet_model_groupnorm import SpikingSwinUNet3D
 from losses import BratsDiceLoss, BratsFocalLoss
 from utils import init_weights, save_metrics_to_file
 from train import train_fold, get_scheduler, EarlyStopping

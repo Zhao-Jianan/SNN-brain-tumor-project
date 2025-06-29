@@ -84,6 +84,31 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         # 创建 attention mask（用于 shifted window）
         self.attn_mask = create_3d_shift_mask(window_size, self.shift_size)
 
+    # def _window_partition(self, x: torch.Tensor):
+    #     """
+    #     将输入划分为窗口
+    #     输入: [B, C, D, H, W]
+    #     输出: [B*num_windows, window_volume, C]
+    #     """
+    #     B, C, D, H, W = x.shape
+    #     wd, wh, ww = self.window_size
+    #     x = x.view(B, C, D // wd, wd, H // wh, wh, W // ww, ww)
+    #     x = x.permute(0, 2, 4, 6, 1, 3, 5, 7).contiguous()
+    #     x = x.view(-1, C, wd * wh * ww).transpose(1, 2)  # [B*num_win, N, C]
+    #     return x, B, D, H, W
+
+    # def _window_reverse(self, x_windows: torch.Tensor, B, D, H, W):
+    #     """
+    #     将窗口恢复为原始图像形状
+    #     """
+    #     wd, wh, ww = self.window_size
+    #     C = x_windows.shape[2]
+    #     x_windows = x_windows.transpose(1, 2).contiguous().view(-1, C, wd, wh, ww)
+    #     x_windows = x_windows.view(B, D // wd, H // wh, W // ww, C, wd, wh, ww)
+    #     x_windows = x_windows.permute(0, 4, 1, 5, 2, 6, 3, 7).contiguous()
+    #     x = x_windows.view(B, C, D, H, W)
+    #     return x
+
     def _window_partition(self, x: torch.Tensor):
         """
         将输入划分为窗口
@@ -92,9 +117,8 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         """
         B, C, D, H, W = x.shape
         wd, wh, ww = self.window_size
-        x = x.view(B, C, D // wd, wd, H // wh, wh, W // ww, ww)
-        x = x.permute(0, 2, 4, 6, 1, 3, 5, 7).contiguous()
-        x = x.view(-1, C, wd * wh * ww).transpose(1, 2)  # [B*num_win, N, C]
+        assert (B * D * H * W) % (wd * wh * ww) == 0
+        x = rearrange(x, 'b c (d wd) (h wh) (w ww) -> (b d h w) (wd wh ww) c', wd=wd, wh=wh, ww=ww)
         return x, B, D, H, W
 
     def _window_reverse(self, x_windows: torch.Tensor, B, D, H, W):
@@ -103,12 +127,22 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         """
         wd, wh, ww = self.window_size
         C = x_windows.shape[2]
-        x_windows = x_windows.transpose(1, 2).contiguous().view(-1, C, wd, wh, ww)
-        x_windows = x_windows.view(B, D // wd, H // wh, W // ww, C, wd, wh, ww)
-        x_windows = x_windows.permute(0, 4, 1, 5, 2, 6, 3, 7).contiguous()
-        x = x_windows.view(B, C, D, H, W)
-        return x
 
+        num_win_d = D // wd
+        num_win_h = H // wh
+        num_win_w = W // ww
+        num_windows_per_sample = num_win_d * num_win_h * num_win_w
+
+        # reshape 成 [B, num_windows, window_volume, C]
+        x_windows = x_windows.view(B, num_windows_per_sample, wd * wh * ww, C)
+
+        # rearrange 成原图像结构
+        x = rearrange(
+            x_windows,
+            'b (d h w) (wd wh ww) c -> b c (d wd) (h wh) (w ww)',
+            d=num_win_d, h=num_win_h, w=num_win_w, wd=wd, wh=wh, ww=ww
+        )
+        return x
 
     def scaled_dot_attn(self, q, k, v, mask=None):
         """

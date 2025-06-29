@@ -73,8 +73,8 @@ class BraTSDataset(MonaiDataset):
             RandFlipd(keys=["image", "label"], spatial_axis=0, prob=0.5),
             RandFlipd(keys=["image", "label"], spatial_axis=1, prob=0.5),
             RandFlipd(keys=["image", "label"], spatial_axis=2, prob=0.5),
-            # RandScaleIntensityd(keys=["image"], factors=0.1, prob=0.5),
-            # RandShiftIntensityd(keys=["image"], offsets=0.1, prob=0.5),
+            RandScaleIntensityd(keys=["image"], factors=0.1, prob=0.5),
+            RandShiftIntensityd(keys=["image"], offsets=0.1, prob=0.5),
             ToTensord(keys=["image", "label"])
         ])
 
