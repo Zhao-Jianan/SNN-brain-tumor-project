@@ -4,34 +4,34 @@ from spikingjelly.activation_based import neuron, functional, surrogate, layer, 
 from config import config as cfg
 
 # 使用spikingjelly的多步模式
-# class LayerNorm3D(base.MemoryModule):
-#     """
-#     支持单步（step_mode='s'）和多步（step_mode='m'）模式。
-#     """
+class LayerNorm3D(base.MemoryModule):
+    """
+    支持单步（step_mode='s'）和多步（step_mode='m'）模式。
+    """
 
-#     def __init__(self, num_channels, step_mode='s'):
-#         super().__init__()
-#         self.norm = nn.LayerNorm(num_channels)
-#         assert step_mode in ('s', 'm'), "step_mode must be 's' or 'm'"
-#         self.step_mode = step_mode
+    def __init__(self, num_channels, step_mode='s'):
+        super().__init__()
+        self.norm = nn.LayerNorm(num_channels)
+        assert step_mode in ('s', 'm'), "step_mode must be 's' or 'm'"
+        self.step_mode = step_mode
 
-#     def forward(self, x):
-#         if self.step_mode == 's':
-#             # 单步输入 [B, C, D, H, W]
-#             x = x.permute(0, 2, 3, 4, 1).contiguous()  # -> [B, D, H, W, C]
-#             x = self.norm(x)
-#             x = x.permute(0, 4, 1, 2, 3).contiguous()  # -> [B, C, D, H, W]
-#             return x
+    def forward(self, x):
+        if self.step_mode == 's':
+            # 单步输入 [B, C, D, H, W]
+            x = x.permute(0, 2, 3, 4, 1).contiguous()  # -> [B, D, H, W, C]
+            x = self.norm(x)
+            x = x.permute(0, 4, 1, 2, 3).contiguous()  # -> [B, C, D, H, W]
+            return x
 
-#         elif self.step_mode == 'm':
-#             # 多步输入 [T, B, C, D, H, W]
-#             T, B, C, D, H, W = x.shape
-#             x = x.view(T * B, C, D, H, W)  # 合并时间和batch
-#             x = x.permute(0, 2, 3, 4, 1).contiguous()  # -> [T*B, D, H, W, C]
-#             x = self.norm(x)
-#             x = x.permute(0, 4, 1, 2, 3).contiguous()  # -> [T*B, C, D, H, W]
-#             x = x.view(T, B, C, D, H, W)   # 拆回 [T, B, C, D, H, W]
-#             return x
+        elif self.step_mode == 'm':
+            # 多步输入 [T, B, C, D, H, W]
+            T, B, C, D, H, W = x.shape
+            x = x.view(T * B, C, D, H, W)  # 合并时间和batch
+            x = x.permute(0, 2, 3, 4, 1).contiguous()  # -> [T*B, D, H, W, C]
+            x = self.norm(x)
+            x = x.permute(0, 4, 1, 2, 3).contiguous()  # -> [T*B, C, D, H, W]
+            x = x.view(T, B, C, D, H, W)   # 拆回 [T, B, C, D, H, W]
+            return x
 
 
 
@@ -95,7 +95,7 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
 
         # 创建 attention mask（用于 shifted window）
@@ -201,9 +201,9 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
         # 脉冲激活
         # out = self.dropout(out)
         # out = out + x_windows
-        # out = out.view(T, B, -1, self.embed_dim)
-        # out = self.sn(out)
-        # out = out.view(T * B, -1, self.embed_dim)
+        out = out.view(T, B, -1, self.embed_dim)
+        out = self.sn(out)
+        out = out.view(T * B, -1, self.embed_dim)
 
         x = self._window_reverse(out, new_B, D, H, W)
         x = x.view(T, B, C, D, H, W)
@@ -234,13 +234,12 @@ class SpikingSwinTransformerBlock3D(base.MemoryModule):
         self.norm2 = layer.GroupNorm(num_groups=num_groups, num_channels=embed_dim, step_mode=step_mode)
         self.linear1 = layer.Linear(embed_dim, mlp_dim, step_mode=step_mode)
         # self.sn1 = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
-        self.gelu = nn.GELU()  # 使用 GELU 激活函数
         self.sn1 = neuron.ParametricLIFNode(
             init_tau=2.0,
             decay_input=True,
-            v_threshold=0.5,
+            v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
         self.linear2 = layer.Linear(mlp_dim, embed_dim, step_mode=step_mode)
         # self.sn2 = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)  
@@ -249,27 +248,17 @@ class SpikingSwinTransformerBlock3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)     
         self.dropout = layer.Dropout(dropout, step_mode=step_mode)
 
     def _linear_forward(self, x):
         x1 = self.linear1(x)
         x1 = self.sn1(x1)
-        
-        # with torch.no_grad():
-        #     fire_rate1 = (x1 > 0).float().mean().item()
-        #     print(f"[Debug] sn1 firing rate: {fire_rate1:.6f}")
-        
         # x1 = self.gelu(x1)
         x2 = self.linear2(x1)
-        # x2 = self.dropout(x2)
+        #x2 = self.dropout(x2)
         output = self.sn2(x2)  
-        
-        # with torch.no_grad():
-        #     fire_rate2 = (output > 0).float().mean().item()
-        #     print(f"[Debug] sn2 firing rate: {fire_rate2:.6f}")
-        
         output = self.dropout(output)
         return output
 
@@ -278,10 +267,6 @@ class SpikingSwinTransformerBlock3D(base.MemoryModule):
         x = self.norm1(x)
         x = self.attn(x)
         x = x + residual # 残差连接
-        
-        # with torch.no_grad():
-        #     diff = (x - residual).abs().mean().item()
-        #     print(f"[Debug] Attention output diff from residual: {diff:.6f}")
 
         residual = x
         x = self.norm2(x)
@@ -306,10 +291,6 @@ class SpikingSwinTransformerBlock3D(base.MemoryModule):
             raise NotImplementedError(f"Unsupported step_mode: {self.step_mode}")
         
         x = x + residual
-        
-        # with torch.no_grad():
-        #     diff = (x - residual).abs().mean().item()
-        #     print(f"[Debug] MLP Output diff from residual: {diff:.6f}")
         return x
 
 class SpikingSwinTransformerStage3D(base.MemoryModule):
@@ -348,7 +329,7 @@ class SpikingPatchEmbed3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
         functional.set_step_mode(self, step_mode=step_mode)
 
@@ -370,7 +351,7 @@ class SpikingPatchExpand3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
         functional.set_step_mode(self, step_mode)
 
@@ -393,7 +374,7 @@ class FinalSpikingPatchExpand3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
         functional.set_step_mode(self, step_mode)
 

@@ -69,7 +69,7 @@ class BraTSDataset(MonaiDataset):
         self.normalize = NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True)
 
         # 数据增强 pipeline
-        self.train_transform = Compose([
+        self.aug_transform = Compose([
             RandFlipd(keys=["image", "label"], spatial_axis=0, prob=0.5),
             RandFlipd(keys=["image", "label"], spatial_axis=1, prob=0.5),
             RandFlipd(keys=["image", "label"], spatial_axis=2, prob=0.5),
@@ -77,8 +77,9 @@ class BraTSDataset(MonaiDataset):
             RandShiftIntensityd(keys=["image"], offsets=0.1, prob=0.5),
             ToTensord(keys=["image", "label"])
         ])
+        
 
-        self.val_transform = Compose([
+        self.transform = Compose([
             ToTensord(keys=["image", "label"])
         ])
 
@@ -129,7 +130,11 @@ class BraTSDataset(MonaiDataset):
 
         if self.mode == "train":
             data = self.patch_crop(data, mode=self.train_crop_mode)  # 随机裁剪 patch
-            data = self.train_transform(data)
+            if np.random.rand() < 0.5:
+                data = self.aug_transform(data)
+            else:
+                data = self.transform(data)
+            
             img = data["image"]  # Tensor (C, D, H, W)
             label = data["label"]  # Tensor (C_label, D, H, W) 
             
@@ -158,7 +163,7 @@ class BraTSDataset(MonaiDataset):
              
         else: # self.mode == "val"
             if self.val_crop_mode == "sliding_window":
-                data = self.val_transform(data)
+                data = self.transform(data)
                 img = data["image"]  # Tensor (C, D, H, W)
                 label = data["label"]  # Tensor (C_label, D, H, W) 
                 img = img.unsqueeze(0).repeat(self.T, 1, 1, 1, 1)  # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
@@ -166,7 +171,7 @@ class BraTSDataset(MonaiDataset):
             
             else: # self.val_crop_mode in ["tumor_aware_random", "random"]:
                 data = self.patch_crop(data, mode=self.val_crop_mode)  # 随机裁剪 patch
-                data = self.val_transform(data)
+                data = self.transform(data)
                 
                 img = data["image"]  # Tensor (C, D, H, W)
                 label = data["label"]  # Tensor (C_label, D, H, W) 

@@ -1,11 +1,11 @@
 import os
 os.chdir(os.path.dirname(__file__))
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import torch
 import torch.optim as optim
 from sklearn.model_selection import KFold
 from spiking_swin_unet_model_groupnorm import SpikingSwinUNet3D
-from losses import BratsDiceLoss, BratsFocalLoss
+from losses import BratsDiceLoss, BratsFocalLoss, AdaptiveRegionalLoss
 from utils import init_weights, save_metrics_to_file
 from train import train_fold, get_scheduler, EarlyStopping
 from plot import plot_metrics
@@ -41,27 +41,32 @@ def main():
         
     
     # 打印配置名
-    print(cfg.device)
+    # print(cfg.device)
+    print("CUDA_VISIBLE_DEVICES:", os.environ["CUDA_VISIBLE_DEVICES"])
 
     # 设置损失函数和优化器
     if cfg.loss_function == 'focal':
         criterion = BratsFocalLoss(
             alpha=0.25,
             gamma=2.0,
-            reduction='mean'
-        ).to(cfg.device)
+            reduction='mean').to(cfg.device)
     elif cfg.loss_function == 'dice':
         criterion = BratsDiceLoss(
             smooth_nr=0,
             smooth_dr=1e-5,
             squared_pred=True,
             sigmoid=True,
-            weights=cfg.loss_weights
-        ).to(cfg.device)
+            weights=cfg.loss_weights).to(cfg.device)
+    elif cfg.loss_function == 'adaptive_regional':    
+        criterion = AdaptiveRegionalLoss(
+            global_weight=0.7, 
+            regional_weight=0.3, 
+            smooth=1e-6, 
+            pool_size=8).to(cfg.device)
     else:
         raise ValueError(f"Unsupported loss function: {cfg.loss_function}")
     kf = KFold(n_splits=cfg.k_folds, shuffle=True, random_state=cfg.seed)
-    print("weights device:", criterion.weights.device)
+    # print("weights device:", criterion.weights.device)
     # 开始交叉验证
     for fold, (train_idx, val_idx) in enumerate(kf.split(case_dirs)):
         model = SpikingSwinUNet3D(

@@ -188,7 +188,120 @@ class BratsFocalLoss(nn.Module):
         else:  # 'none'
             return loss
 
+   
+ 
+   
+def adaptive_regional_loss(y_true, y_pred):
+    """
+    Optimized adaptive regional loss for 3D segmentation with faster training and robust NaN handling
+    PyTorch implementation
     
+    Args:
+        y_true: Ground truth tensor of shape (batch, channels, depth, height, width)
+        y_pred: Predicted tensor of shape (batch, channels, depth, height, width)
+    
+    Returns:
+        final_loss: Scalar tensor containing the computed loss
+    """
+    
+    # Basic type conversion and clipping
+    y_true = y_true.float()
+    y_pred = torch.clamp(y_pred.float(), min=1e-7, max=1.0)
+    
+    # Global dice calculation for 3D (dim=[2, 3, 4] for depth, height, width)
+    smooth = 1e-6
+    intersection = torch.sum(y_true * y_pred, dim=[2, 3, 4])
+    union = torch.sum(y_true, dim=[2, 3, 4]) + torch.sum(y_pred, dim=[2, 3, 4])
+    
+    # Avoid zero denominators
+    union = torch.where(union == 0, torch.ones_like(union) * smooth, union)
+    
+    global_dice = (2.0 * intersection + smooth) / (union + smooth)
+    dice_loss = 1.0 - torch.mean(global_dice)
+    
+    # Regional dice with 3D average pooling
+    # PyTorch expects (batch, channels, depth, height, width) format
+    pooled_true = F.avg_pool3d(y_true, kernel_size=8, stride=8)
+    pooled_pred = F.avg_pool3d(y_pred, kernel_size=8, stride=8)
+    
+    # Calculate regional dice for 3D
+    region_intersection = torch.sum(pooled_true * pooled_pred, dim=[2, 3, 4])
+    region_union = torch.sum(pooled_true, dim=[2, 3, 4]) + torch.sum(pooled_pred, dim=[2, 3, 4])
+    
+    # Avoid zero denominators in regional dice
+    region_union = torch.where(region_union == 0, torch.ones_like(region_union) * smooth, region_union)
+    
+    region_dice = (2.0 * region_intersection + smooth) / (region_union + smooth)
+    region_loss = 1.0 - torch.mean(region_dice)
+    
+    # Weighted final loss
+    final_loss = 0.7 * dice_loss + 0.3 * region_loss
+    
+    # Final NaN check: replace NaNs with 0
+    final_loss = torch.where(torch.isnan(final_loss), torch.tensor(0.0, device=final_loss.device), final_loss)
+    
+    return final_loss
+
+class AdaptiveRegionalLoss(nn.Module):
+    """
+    PyTorch module implementation of adaptive regional loss
+    """
+    def __init__(self, global_weight=0.7, regional_weight=0.3, smooth=1e-6, pool_size=8):
+        super(AdaptiveRegionalLoss, self).__init__()
+        self.global_weight = global_weight
+        self.regional_weight = regional_weight
+        self.smooth = smooth
+        self.pool_size = pool_size
+    
+    def forward(self, y_pred, y_true):
+        """
+        Forward pass
+        
+        Args:
+            y_pred: Predicted tensor of shape (batch, channels, depth, height, width)
+            y_true: Ground truth tensor of shape (batch, channels, depth, height, width)
+        
+        Returns:
+            final_loss: Scalar tensor containing the computed loss
+        """
+        # Basic type conversion and clipping
+        y_true = y_true.float()
+        y_pred = torch.clamp(y_pred.float(), min=1e-7, max=1.0)
+        
+        # Global dice calculation
+        intersection = torch.sum(y_true * y_pred, dim=[2, 3, 4])
+        union = torch.sum(y_true, dim=[2, 3, 4]) + torch.sum(y_pred, dim=[2, 3, 4])
+        
+        # Avoid zero denominators
+        union = torch.where(union == 0, torch.ones_like(union) * self.smooth, union)
+        
+        global_dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
+        dice_loss = 1.0 - torch.mean(global_dice)
+        
+        # Regional dice with 3D average pooling
+        pooled_true = F.avg_pool3d(y_true, kernel_size=self.pool_size, stride=self.pool_size)
+        pooled_pred = F.avg_pool3d(y_pred, kernel_size=self.pool_size, stride=self.pool_size)
+        
+        # Calculate regional dice
+        region_intersection = torch.sum(pooled_true * pooled_pred, dim=[2, 3, 4])
+        region_union = torch.sum(pooled_true, dim=[2, 3, 4]) + torch.sum(pooled_pred, dim=[2, 3, 4])
+        
+        # Avoid zero denominators in regional dice
+        region_union = torch.where(region_union == 0, torch.ones_like(region_union) * self.smooth, region_union)
+        
+        region_dice = (2.0 * region_intersection + self.smooth) / (region_union + self.smooth)
+        region_loss = 1.0 - torch.mean(region_dice)
+        
+        # Weighted final loss
+        final_loss = self.global_weight * dice_loss + self.regional_weight * region_loss
+        
+        # Final NaN check
+        final_loss = torch.where(torch.isnan(final_loss), torch.tensor(0.0, device=final_loss.device), final_loss)
+        
+        return final_loss  
+   
+   
+
 def main():
     # loss_fn = BratsDiceLoss(squared_pred=True, sigmoid=True,include_background=True, batch=False, reduction='mean')
     # pred = torch.randn(3, 3, 128, 128, 128)  # logits
@@ -196,11 +309,18 @@ def main():
     # loss = loss_fn(pred, target)
     # print("Loss:", loss.item())
     
-    loss_fn = BratsFocalLoss(alpha=0.25, gamma=2.0)
+    # loss_fn = BratsFocalLoss(alpha=0.25, gamma=2.0)
+    # pred = torch.randn(1, 3, 128, 128, 128)  # logits
+    # target = torch.randint(0, 1, (1, 3, 128, 128, 128)).float()  # one-hot mask
+    # loss = loss_fn(pred, target)  # pred_logits: raw output before sigmoid
+    # print("Loss:", loss.item())
+    
+    loss_fn = AdaptiveRegionalLoss(global_weight=0.7, regional_weight=0.3, smooth=1e-6, pool_size=8)
     pred = torch.randn(1, 3, 128, 128, 128)  # logits
     target = torch.randint(0, 1, (1, 3, 128, 128, 128)).float()  # one-hot mask
     loss = loss_fn(pred, target)  # pred_logits: raw output before sigmoid
-    print("Loss:", loss.item())
+    print("Loss:", loss.item())    
+    
     
 if __name__ == "__main__":
     main()

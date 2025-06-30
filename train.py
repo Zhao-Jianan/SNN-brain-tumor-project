@@ -103,6 +103,7 @@ class EarlyStopping:
         self.delta = delta
         self.start_epoch = start_epoch
         self.best_score = None
+        self.best_epoch = None
         self.counter = 0
         self.early_stop = False
 
@@ -114,12 +115,14 @@ class EarlyStopping:
         score = -val_loss
         if self.best_score is None:
             self.best_score = score
+            self.best_epoch = current_epoch
         elif score < self.best_score + self.delta:
             self.counter += 1
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
             self.best_score = score
+            self.best_epoch = current_epoch
             self.counter = 0
 
 
