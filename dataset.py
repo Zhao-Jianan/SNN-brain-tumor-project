@@ -155,7 +155,10 @@ class BraTSDataset(MonaiDataset):
                     print("Not a 4D tensor; skipping per-channel stats.")
 
             # 生成 T 个时间步的脉冲输入，重复编码
-            img_rescale = self.rescale_to_unit_range(img)
+            if self.encode_method == 'none':
+                img_rescale = img
+            else:
+                img_rescale = self.rescale_to_unit_range(img)
             x_seq = self.encode_spike_input(img_rescale)
 
             # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
@@ -177,7 +180,10 @@ class BraTSDataset(MonaiDataset):
                 label = data["label"]  # Tensor (C_label, D, H, W) 
                 
                 # 生成 T 个时间步的脉冲输入，重复编码
-                img_rescale = self.rescale_to_unit_range(img)
+                if self.encode_method == 'none':
+                    img_rescale = img
+                else:
+                    img_rescale = self.rescale_to_unit_range(img)
                 x_seq = self.encode_spike_input(img_rescale)
 
                 # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
@@ -288,25 +294,27 @@ class BraTSDataset(MonaiDataset):
         x_rescaled = (x - x_min) / (x_max - x_min + 1e-8)
         return x_rescaled.clamp(0., 1.)
     
-    def encode_spike_input(self, img_rescale: torch.Tensor) -> torch.Tensor:
+    def encode_spike_input(self, img: torch.Tensor) -> torch.Tensor:
         """
         对归一化图像进行脉冲编码，支持 poisson / latency / weighted_phase。
         输入:
             img_rescale: torch.Tensor, shape (B, C, D, H, W), 数值应已在 [0, 1] 区间 
         """
         if self.encode_method == 'poisson':
-            x_seq = torch.stack([self.poisson_encoder(img_rescale) for _ in range(self.T)], dim=0)
+            x_seq = torch.stack([self.poisson_encoder(img) for _ in range(self.T)], dim=0)
         elif self.encode_method == 'latency':
-            img_rescale = img_rescale.unsqueeze(0)  # (1,C,D,H,W)
-            self.latency_encoder.encode(img_rescale)  # (T,1,C,D,H,W)
+            img = img.unsqueeze(0)  # (1,C,D,H,W)
+            self.latency_encoder.encode(img)  # (T,1,C,D,H,W)
             spike = self.latency_encoder.spike
             x_seq = spike.squeeze(1)  # (T,C,D,H,W)
         elif self.encode_method == 'weighted_phase':
-            img_rescale = img_rescale * (1 - 2**(-self.T))
-            img_rescale = img_rescale.unsqueeze(0)  # (1,C,D,H,W)
-            self.weighted_phase_encoder.encode(img_rescale)  # (T,1,C,D,H,W)
+            img = img * (1 - 2**(-self.T))
+            img = img.unsqueeze(0)  # (1,C,D,H,W)
+            self.weighted_phase_encoder.encode(img)  # (T,1,C,D,H,W)
             spike = self.weighted_phase_encoder.spike.float()
-            x_seq = spike.squeeze(1)  # (T,C,D,H,W)    
+            x_seq = spike.squeeze(1)  # (T,C,D,H,W)
+        elif self.encode_method == 'none':
+            x_seq = img.unsqueeze(0).repeat(self.T, 1, 1, 1, 1)
         else:
             raise NotImplementedError(f"Encoding method '{self.encode_method}' is not implemented.")
         # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)

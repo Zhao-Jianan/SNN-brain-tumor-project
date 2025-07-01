@@ -5,7 +5,7 @@ import time
 from inference_helper import TemporalSlidingWindowInference
 from config import config as cfg
 from collections import defaultdict
-
+from torch.amp import autocast, GradScaler
 
 class SpikeRateMonitor:
     def __init__(self):
@@ -134,13 +134,14 @@ monitor_val = None
 
 
 # 训练和验证函数
-def train(train_loader, model, optimizer, criterion, device, monitor=None, debug=False, compute_time=False):
+def train(train_loader, model, optimizer, criterion, device, monitor=None, debug=False, compute_time=False, use_amp=True):
     model.train()
     if monitor:
         monitor.register_hooks(model)
         monitor.reset()
     
     running_loss = 0.0
+    scaler = GradScaler(device='cuda', enabled=use_amp)  # 混合精度缩放器
     print('Train -------------->>>>>>>')
     for x_seq, y in train_loader:
         if compute_time:
@@ -160,25 +161,26 @@ def train(train_loader, model, optimizer, criterion, device, monitor=None, debug
             print(f"[DEBUG] Permute time: {time1 - start_time:.4f} seconds")
         y = y.to(device)
         optimizer.zero_grad()
-        output = model(x_seq)
+        with autocast(device_type='cuda', enabled=use_amp):
+            output = model(x_seq)
         
-        if compute_time:
-            time2 = time.time()
-            print(f"[DEBUG] Model forward time: {time2 - time1:.4f} seconds")
+            if compute_time:
+                time2 = time.time()
+                print(f"[DEBUG] Model forward time: {time2 - time1:.4f} seconds")
 
-        if debug:
-            # 检查模型输出是否为 NaN 或 Inf
-            if torch.isnan(output).any() or torch.isinf(output).any():
-                print(f"[FATAL] model output NaN/Inf at batch, stopping.")
-                print(f"Output: {output}")  # 输出模型输出，检查其值
-                break
-        
-        if compute_time:    
-            time3 = time.time()
-            print(f"[DEBUG] Model output time: {time3 - time2:.4f} seconds") 
-            print(f"pred device: {output.device}, target device: {y.device}, weights device: {criterion.weights.device}") 
-                     
-        loss = criterion(output, y)
+            if debug:
+                # 检查模型输出是否为 NaN 或 Inf
+                if torch.isnan(output).any() or torch.isinf(output).any():
+                    print(f"[FATAL] model output NaN/Inf at batch, stopping.")
+                    print(f"Output: {output}")  # 输出模型输出，检查其值
+                    break
+            
+            if compute_time:    
+                time3 = time.time()
+                print(f"[DEBUG] Model output time: {time3 - time2:.4f} seconds") 
+                print(f"pred device: {output.device}, target device: {y.device}, weights device: {criterion.weights.device}") 
+                        
+            loss = criterion(output, y)
         
         if compute_time:
             time4 = time.time()
@@ -193,13 +195,15 @@ def train(train_loader, model, optimizer, criterion, device, monitor=None, debug
         if compute_time:
             time5 = time.time()
 
-        loss.backward()
+        scaler.scale(loss).backward()
+        
         
         if compute_time:
             time6 = time.time()
             print(f"[DEBUG] Backward time: {time6 - time5:.4f} seconds")
             
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         
         if compute_time:
             time7 = time.time()
@@ -234,7 +238,7 @@ if cfg.val_crop_mode == 'sliding_window':
     )
 
 
-def validate(val_loader, model, criterion, device, compute_hd, monitor=None, debug=False):
+def validate(val_loader, model, criterion, device, compute_hd, monitor=None, debug=False, use_amp=True):
     model.eval()
     if monitor:
         monitor.register_hooks(model)
@@ -257,12 +261,13 @@ def validate(val_loader, model, criterion, device, compute_hd, monitor=None, deb
             
             x_seq = x_seq.permute(1, 0, 2, 3, 4, 5).contiguous().to(device)  # [T, B, 1, D, H, W]
             y_onehot = y.float().to(device)
-            if val_inferencer:
-                output = val_inferencer(x_seq, model)
-            else:
-                output = model(x_seq)  # [B, C, D, H, W]，未过 softmax
+            with autocast(device_type='cuda', enabled=use_amp):
+                if val_inferencer:
+                    output = val_inferencer(x_seq, model)
+                else:
+                    output = model(x_seq)  # [B, C, D, H, W]，未过 softmax
 
-            loss = criterion(output, y_onehot)
+                loss = criterion(output, y_onehot)
             
             if debug:
                 # 检查 output 是否为 NaN 或 Inf
@@ -290,15 +295,24 @@ def validate(val_loader, model, criterion, device, compute_hd, monitor=None, deb
     num_batches = len(val_loader)
     avg_loss = total_loss / num_batches
     avg_dice = {k: v / num_batches for k, v in total_dice.items()}
-
-    if compute_hd:
-        avg_hd95 = np.nanmean(hd95s)
-    else:
-        avg_hd95 = np.nan
+    avg_hd95 = np.nanmean(hd95s) if compute_hd else np.nan
+    
     return avg_loss, avg_dice, avg_hd95
 
 
-def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold, compute_hd, scheduler=None, early_stopping=None):
+def train_one_fold(
+    train_loader, 
+    val_loader, 
+    model, 
+    optimizer, 
+    criterion, 
+    device, 
+    num_epochs, 
+    fold, 
+    compute_hd, 
+    scheduler=None, 
+    early_stopping=None, 
+    use_amp=True):
     train_losses = []
     val_losses = []
     val_dices = []
@@ -328,7 +342,7 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
             
         train_start_time = time.time()
         
-        train_loss = train(train_loader, model, optimizer, criterion, device, monitor=monitor_train)
+        train_loss = train(train_loader, model, optimizer, criterion, device, monitor=monitor_train, use_amp=use_amp)
         
         # 计时结束
         train_end_time = time.time()
@@ -338,7 +352,7 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
         train_losses.append(train_loss)
         
         val_start_time = time.time()
-        val_loss, val_dice, val_hd95 = validate(val_loader, model, criterion, device, compute_hd, monitor=monitor_val)
+        val_loss, val_dice, val_hd95 = validate(val_loader, model, criterion, device, compute_hd, monitor=monitor_val, use_amp=use_amp)
         # 计时结束
         val_end_time = time.time()
         val_elapsed_time = val_end_time - val_start_time
@@ -381,11 +395,11 @@ def train_one_fold(train_loader, val_loader, model, optimizer, criterion, device
 
 
 # 折训练函数
-def train_fold(train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold, compute_hd, scheduler, early_stopping):
+def train_fold(train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold, compute_hd, scheduler, early_stopping,use_amp):
     print(f"\n[Fold {fold+1}] Training Started")
     
     train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history = train_one_fold(
-        train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold+1, compute_hd, scheduler, early_stopping
+        train_loader, val_loader, model, optimizer, criterion, device, num_epochs, fold+1, compute_hd, scheduler, early_stopping,use_amp
     )
     
     print(f"[Fold {fold+1}] Training Completed")

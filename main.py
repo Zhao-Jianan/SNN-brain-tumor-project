@@ -1,10 +1,11 @@
 import os
 os.chdir(os.path.dirname(__file__))
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import torch
 import torch.optim as optim
 from sklearn.model_selection import KFold
-from spiking_swin_unet_model_groupnorm import SpikingSwinUNet3D
+# from spiking_swin_unet_model_groupnorm import SpikingSwinUNet3D
+from spiking_simple_unet_model_groupnorm import SpikingSwinUNet3D
 from losses import BratsDiceLoss, BratsFocalLoss, AdaptiveRegionalLoss
 from utils import init_weights, save_metrics_to_file
 from train import train_fold, get_scheduler, EarlyStopping
@@ -41,7 +42,7 @@ def main():
         
     
     # 打印配置名
-    # print(cfg.device)
+    print(cfg.device)
     print("CUDA_VISIBLE_DEVICES:", os.environ["CUDA_VISIBLE_DEVICES"])
 
     # 设置损失函数和优化器
@@ -93,7 +94,7 @@ def main():
         # 调用训练函数
         train_losses, val_losses, val_dices, val_mean_dices, val_hd95s, lr_history = train_fold(
             train_loader, val_loader, model, optimizer, criterion, cfg.device, cfg.num_epochs, \
-                fold, cfg.compute_hd, scheduler, early_stopping
+                fold, cfg.compute_hd, scheduler, early_stopping, cfg.use_amp
         )
         
         # 保存指标

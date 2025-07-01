@@ -95,7 +95,7 @@ class SpikingShiftedWindowAttention3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
 
         # 创建 attention mask（用于 shifted window）
@@ -238,9 +238,9 @@ class SpikingSwinTransformerBlock3D(base.MemoryModule):
         self.sn1 = neuron.ParametricLIFNode(
             init_tau=2.0,
             decay_input=True,
-            v_threshold=0.5,
+            v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
         self.linear2 = layer.Linear(mlp_dim, embed_dim, step_mode=step_mode)
         # self.sn2 = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)  
@@ -249,28 +249,28 @@ class SpikingSwinTransformerBlock3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)     
         self.dropout = layer.Dropout(dropout, step_mode=step_mode)
 
     def _linear_forward(self, x):
         x1 = self.linear1(x)
-        x1 = self.sn1(x1)
+        #x1 = self.sn1(x1)
         
         # with torch.no_grad():
         #     fire_rate1 = (x1 > 0).float().mean().item()
         #     print(f"[Debug] sn1 firing rate: {fire_rate1:.6f}")
         
-        # x1 = self.gelu(x1)
+        x1 = self.gelu(x1)
         x2 = self.linear2(x1)
         # x2 = self.dropout(x2)
-        output = self.sn2(x2)  
+        # output = self.sn2(x2)  
         
         # with torch.no_grad():
         #     fire_rate2 = (output > 0).float().mean().item()
         #     print(f"[Debug] sn2 firing rate: {fire_rate2:.6f}")
         
-        output = self.dropout(output)
+        output = self.dropout(x2)
         return output
 
     def forward(self, x):
@@ -348,7 +348,7 @@ class SpikingPatchEmbed3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
         functional.set_step_mode(self, step_mode=step_mode)
 
@@ -370,7 +370,7 @@ class SpikingPatchExpand3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
         functional.set_step_mode(self, step_mode)
 
@@ -393,7 +393,7 @@ class FinalSpikingPatchExpand3D(base.MemoryModule):
             decay_input=True,
             v_threshold=1.0,
             v_reset=0.0,
-            surrogate_function=surrogate.LeakyKReLU(), 
+            surrogate_function=surrogate.ATan(), 
             step_mode=step_mode)
         functional.set_step_mode(self, step_mode)
 

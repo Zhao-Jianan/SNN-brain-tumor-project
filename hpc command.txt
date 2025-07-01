@@ -106,23 +106,24 @@ nohup python snnproject/main.py > 38-log_entile18_4T_center_1e3_1e6_poly20_214_a
 nohup python snnproject6/main.py > 39-log_entile18_4T_aware_1e3_1e6_warmpoly20_214_attmask_res_500.out 2>&1 &
 [40]
 nohup python snnproject10/main.py > 40-log_entile18_4T_aware_1e3_1e6_poly15_214_attmask_res_500.out 2>&1 &
+[41]
+nohup python snnproject2/main.py > 41-log_entile18_4T_aware_1e3_1e6_poly20_214_attmask_res_500.out 2>&1 &
 [42]
 nohup python snnproject8/main.py > 42-log_entile18_4T_center_1e3_1e6_poly10_214_attmask_res_500.out 2>&1 &
 [43]
 nohup python snnproject11/main.py > 43-log_entile18_4T_center_1e3_1e6_poly25_214_attmask_res_500.out 2>&1 &
+[44]
+nohup python snnproject12/main.py > 44-log_entile18_4T_aware_1e3_1e6_poly25_214_attmask_res_500.out 2>&1 &
 [45]
 nohup python snnproject10/main.py > 45-log_entile18_4T_aware_1e3_1e6_poly20_214_posembed_500.out 2>&1 &
 [46]
 nohup python snnproject3/main.py > 46-log_entile18_4T_aware_1e3_1e6_poly20_214_noposembed_500.out 2>&1 &
 [50]
 nohup python snnproject9/main.py > 50-log_entile18_4T_aware_1e3_1e6_poly20_214_groupnorm_aug_paralif.out 2>&1 &
+[52]
+nohup python snnproject11/main.py > 52-log_entile18_4T_aware_1e3_1e6_poly20_214_adaptgroupnorm_attlayernorm_aug_paralif.out 2>&1 &
 
 [Running]
-
-[41]
-nohup python snnproject2/main.py > 41-log_entile18_4T_aware_1e3_1e6_poly20_214_attmask_res_500.out 2>&1 &
-[44]
-nohup python snnproject12/main.py > 44-log_entile18_4T_aware_1e3_1e6_poly25_214_attmask_res_500.out 2>&1 &
 [47]
 nohup python snnproject10/main.py > 47-log_entile18_4T_aware_1e3_1e6_poly20_214_noposembed_groupnorm_600.out 2>&1 &
 [48]
@@ -131,8 +132,7 @@ nohup python snnproject3/main.py > 48-log_entile18_4T_aware_1e3_1e6_poly20_111_n
 nohup python snnproject8/main.py > 49-log_entile18_4T_aware_1e3_1e6_poly20_214_groupnorm_aug_2drop.out 2>&1 &
 [51]
 nohup python snnproject5/main.py > 51-log_entile18_4T_aware_1e3_1e6_poly20_214_adaptgroupnorm_aug_paralif.out 2>&1 &
-[52]
-nohup python snnproject11/main.py > 52-log_entile18_4T_aware_1e3_1e6_poly20_214_adaptgroupnorm_attlayernorm_aug_paralif.out 2>&1 &
+
 [53]
 nohup python snnproject7/main.py > 53-log_entile18_4T_aware_1e3_1e6_poly20_214_adaptgroupnorm_aug_paralif_regionalloss.out 2>&1 &
 [54]
@@ -143,11 +143,18 @@ nohup python snnproject6/main.py > 55-log_entile18_4T_aware_1e3_1e6_poly20_214_s
 nohup python snnproject/main.py > 56-log_entile18_4T_aware_1e3_1e6_poly20_214_simpleunet_paralif_regionalloss_changeaug.out 2>&1 &
 [57]
 nohup python snnproject9/main.py > 57-log_entile18_4T_aware_1e3_1e6_poly20_214_adaptgroupnorm_paralifrelu_regionloss_newaug.out 2>&1 &
-
+[58]
+nohup python snnproject12/main.py > 58-log_entile18_4T_noneencode_aware_1e3_1e6_poly20_214_simpleunet_paralif_regionloss_newaug.out 2>&1 &
+[59]
+nohup python snnproject2/main.py > 59-log_entile18_4T_noencode_aware_1e3_1e6_poly20_214_nospiketrans_paralif_regionloss_newaug.out 2>&1 &
+[60]
+nohup python snnproject11/main.py > 60-log_entile18_4T_noencode_aware_2batch_1e3_1e6_poly20_214_nospiketrans_paralif_regionloss_newaug.out 2>&1 &
+[61]
+nohup python snnproject10/main.py > 61-log_entile18_4T_noencode_aware_2batch_1e3_1e6_poly20_simpleunet_paralif_regionloss_newaug.out 2>&1 &
 
 
 
 ps -u $USER -f | grep python
 pgrep -u $USER -a python
 pkill -f filename.py
-pkill -f snnproject2/main.py
+pkill -f snnproject10/main.py

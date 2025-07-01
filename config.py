@@ -5,7 +5,7 @@ class Config:
         self.gpu_name = 'cuda:0'
         self.device = torch.device(self.gpu_name if torch.cuda.is_available() else "cpu")
         self.seed =  3407 # 42, 3407
-        
+        self.use_amp = True  # 使用自动混合精度训练
         # BraTS2018
         self.root_dirs = ['./data/HGG', './data/LGG']       # ['./data/HGG', './data/LGG'] 
         self.modalities = ['t1', 't1ce', 't2', 'flair']
@@ -27,7 +27,7 @@ class Config:
         # self.image_suffix = ".nii.gz"    
         # self.et_label = 3
         
-        self.encode_method = 'poisson'  # poisson, latency, weighted_phase
+        self.encode_method = 'none'  # poisson, latency, weighted_phase, none
 
         self.patch_size = [128, 128, 128]
         self.window_size = [it // 32 for it in self.patch_size]
@@ -37,7 +37,7 @@ class Config:
         self.T = 4
         self.num_norm_groups = [8, 12, 24, 32] 
         self.num_epochs = 600
-        self.batch_size = 1
+        self.batch_size = 2
         self.k_folds = 5
         self.loss_function = 'adaptive_regional' # dice, focal, adaptive_regional
         self.loss_weights = [2.0, 1.0, 4.0] # [2.0, 1.0, 4.0]
