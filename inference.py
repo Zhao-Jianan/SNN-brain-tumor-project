@@ -2,8 +2,10 @@ import torch
 import nibabel as nib
 import numpy as np
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 from einops import rearrange
-from spiking_swin_unet_model import SpikingSwinUNet3D
+# from spiking_swin_unet_model import SpikingSwinUNet3D
+from spiking_simple_unet_model_groupnorm import SpikingSwinUNet3D
 import torch.nn.functional as F
 from config import config as cfg
 from spikingjelly.activation_based.encoding import PoissonEncoder
@@ -168,9 +170,9 @@ def pred_single_case(case_dir, inference_dir, model, inference_engine, device, T
     # 用cfg.modalities拼4模态路径
     case_name = os.path.basename(case_dir)
     print(f"Processing case: {case_name}")
-    image_paths = [os.path.join(case_dir, f"{case_name}_{mod}.nii") for mod in cfg.modalities]
-    print("Image paths:", image_paths)
-    # image_paths = [os.path.join(case_dir, f"{mod}.nii.gz") for mod in cfg.modalities]
+    # image_paths = [os.path.join(case_dir, f"{case_name}_{mod}.nii") for mod in cfg.modalities]
+    # print("Image paths:", image_paths)
+    image_paths = [os.path.join(case_dir, f"{mod}.nii.gz") for mod in cfg.modalities]
 
     # 预处理，返回 (T, C, D, H, W) Tensor
     x_seq = preprocess_for_inference(image_paths, T=T)
@@ -232,9 +234,9 @@ def run_inference_on_folder(case_root: str, save_dir: str, model, inference_engi
     
 
 def main():
-    case_dir = "./data/HGG/Brats18_2013_27_1"
+    case_dir = "/hpc/ajhz839/validation/val/"
     model_ckpt = "./checkpoint/best_model_fold_inference.pth"
-    inference_dir = "./pred"
+    inference_dir = "/hpc/ajhz839/validation/test_pred"
     
     model = SpikingSwinUNet3D(window_size=cfg.window_size, T=cfg.T, step_mode=cfg.step_mode).to(cfg.device)  # 模型.to(cfg.device)
     model.load_state_dict(torch.load(model_ckpt, map_location=cfg.device))

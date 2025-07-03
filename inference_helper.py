@@ -11,7 +11,7 @@ class TemporalSlidingWindowInference:
         overlap=0.25,
         sw_batch_size=1,
         mode="gaussian",
-        encode_method='poisson',
+        encode_method='none',  # 'poisson', 'latency', 'weighted_phase', 'none'
         T=4,
         num_classes=3
     ):
@@ -56,6 +56,8 @@ class TemporalSlidingWindowInference:
             x = img_rescale * (1 - 2 ** (-self.T))      # 重要：训练中也做了
             self.weighted_phase_encoder.encode(x)      # 输入 (B, C, D, H, W)
             spike = self.weighted_phase_encoder.spike.float()  # (T, B, C, D, H, W)
+        elif self.encode_method == 'none':
+            spike = img_rescale.unsqueeze(0).repeat(self.T, 1, 1, 1, 1, 1)
 
         else:
             raise NotImplementedError(f"Encoding method '{self.encode_method}' is not implemented.")
@@ -99,7 +101,8 @@ class TemporalSlidingWindowInference:
 
         # 使用第0帧的图像进行归一化（不影响时间维度）
         inputs_rescaled = inputs.clone()
-        inputs_rescaled[0] = global_rescale_0_1(inputs[0])
+        if self.encode_method != 'none':
+            inputs_rescaled[0] = global_rescale_0_1(inputs[0])
 
         # ---------------------------
         # Step 1: Padding if needed

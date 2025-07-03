@@ -35,7 +35,7 @@ class Config:
         self.num_heads = [4, 6, 8, 12]  # 96-[4, 6, 8, 12]
         self.num_classes = 3
         self.T = 4
-        self.num_norm_groups = [8, 12, 24, 32] 
+        self.num_norm_groups = [8, 8, 8, 8]
         self.num_epochs = 600
         self.batch_size = 2
         self.k_folds = 5

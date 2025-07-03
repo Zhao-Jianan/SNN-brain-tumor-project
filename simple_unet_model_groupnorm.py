@@ -317,32 +317,23 @@ from config import config as cfg
 #         return self.blocks(x)
 
 
-class SpikingPatchEmbed3D(base.MemoryModule):
-    def __init__(self, in_channels, embed_dim, patch_size=(2, 2, 2), num_groups=8, step_mode='m'):
+class PatchEmbed3D(base.MemoryModule):
+    def __init__(self, in_channels, embed_dim, patch_size=(2, 2, 2), num_groups=8):
         super().__init__()
-        self.proj = layer.Conv3d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size, step_mode=step_mode)
-        # self.norm = LayerNorm3D(embed_dim, step_mode=step_mode)
-        self.norm = layer.GroupNorm(num_groups=num_groups, num_channels=embed_dim, step_mode=step_mode)
-        # self.sn = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
-        self.sn = neuron.ParametricLIFNode(
-            init_tau=2.0,
-            decay_input=True,
-            v_threshold=1.0,
-            v_reset=0.0,
-            surrogate_function=surrogate.ATan(), 
-            step_mode=step_mode)
-        functional.set_step_mode(self, step_mode=step_mode)
+        self.proj = nn.Conv3d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=embed_dim)
+        self.relu = nn.ReLU()
 
     def forward(self, x):
         x = self.proj(x)
         x = self.norm(x)
-        x = self.sn(x)
+        x = self.relu(x)
         return x
 
 class SpikingPatchExpand3D(base.MemoryModule):
     def __init__(self, in_channels, out_channels, kernel_size=(2,2,2), stride=2, dropout=0.1, num_groups=8, step_mode='s'):
         super().__init__()
-        self.conv_transpose = layer.ConvTranspose3d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, step_mode=step_mode)
+        self.conv_transpose = nn.ConvTranspose3d(in_channels, out_channels, kernel_size=kernel_size, stride=stride)
         # self.norm = LayerNorm3D(out_channels, step_mode=step_mode)
         self.norm = layer.GroupNorm(num_groups=num_groups, num_channels=out_channels, step_mode=step_mode)
         # self.sn = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
@@ -369,14 +360,15 @@ class FinalSpikingPatchExpand3D(base.MemoryModule):
         # self.norm = LayerNorm3D(out_channels, step_mode=step_mode)
         self.norm = layer.GroupNorm(num_groups=num_groups, num_channels=out_channels, step_mode=step_mode)
         # self.sn = neuron.LIFNode(surrogate_function=surrogate.ATan(), step_mode=step_mode)
-        self.sn = neuron.ParametricLIFNode(
-            init_tau=2.0,
-            decay_input=True,
-            v_threshold=1.0,
-            v_reset=0.0,
-            surrogate_function=surrogate.ATan(), 
-            step_mode=step_mode)
-        functional.set_step_mode(self, step_mode)
+        # self.sn = neuron.ParametricLIFNode(
+        #     init_tau=2.0,
+        #     decay_input=True,
+        #     v_threshold=1.0,
+        #     v_reset=0.0,
+        #     surrogate_function=surrogate.ATan(), 
+        #     step_mode=step_mode)
+        # functional.set_step_mode(self, step_mode)
+        self.relu = layer.ReLU(inplace=True)  # 使用 ReLU 激活函数
 
     def forward(self, x):
         x = self.conv_transpose(x)
@@ -419,7 +411,7 @@ class SpikingAddConverge3D(base.MemoryModule):
 
 
 
-class SpikingSwinUNet3D(base.MemoryModule):
+class SimpleUNet3D(base.MemoryModule):
     def __init__(self, in_channels=4, num_classes=3, embed_dim=cfg.embed_dim, layers=[2, 2, 4, 2], num_heads=cfg.num_heads,
                  window_size=(4,4,4), dropout=0.1, T=8, num_norm_groups=cfg.num_norm_groups, step_mode='s'):
         super().__init__()

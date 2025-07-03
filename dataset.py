@@ -184,10 +184,10 @@ class BraTSDataset(MonaiDataset):
                     img_rescale = img
                 else:
                     img_rescale = self.rescale_to_unit_range(img)
-                x_seq = self.encode_spike_input(img_rescale)
+                # x_seq = self.encode_spike_input(img_rescale)
 
                 # x_seq: (T, C, D, H, W), label: (C_label, D, H, W)
-                return x_seq, label
+                return img_rescale, label
     
 
     # 随机裁剪，支持 warmup 模式
